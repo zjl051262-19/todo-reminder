@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>待办提醒</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      background: #f4f6f8;
+      color: #1f2937;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 18px 12px;
+      background: #f4f6f8;
+    }
+
+    main {
+      width: min(720px, 100%);
+      margin: 0 auto;
+    }
+
+    header {
+      margin: 0 0 14px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .note {
+      margin: 0;
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .panel {
+      background: #ffffff;
+      border: 1px solid #d9e1ea;
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    }
+
+    .alert {
+      display: none;
+      margin-bottom: 12px;
+      border: 2px solid #dc2626;
+      background: #fff1f2;
+      color: #991b1b;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .alert.show {
+      display: block;
+    }
+
+    form {
+      display: grid;
+      grid-template-columns: 1fr 210px 82px;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    input,
+    button {
+      min-height: 44px;
+      border-radius: 7px;
+      font: inherit;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      padding: 0 11px;
+      background: #ffffff;
+      color: #1f2937;
+    }
+
+    button {
+      border: 0;
+      padding: 0 12px;
+      cursor: pointer;
+      background: #2563eb;
+      color: #ffffff;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    button.secondary {
+      background: #eef2f7;
+      color: #334155;
+    }
+
+    button.danger {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .empty {
+      margin: 20px 0 8px;
+      color: #64748b;
+      text-align: center;
+    }
+
+    .todo {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid #d9e1ea;
+      border-left: 6px solid #94a3b8;
+      border-radius: 8px;
+      padding: 12px;
+      background: #ffffff;
+    }
+
+    .todo.due-soon {
+      border-left-color: #f59e0b;
+      background: #fffbeb;
+    }
+
+    .todo.overdue {
+      border-left-color: #dc2626;
+      background: #fff1f2;
+    }
+
+    .todo.done {
+      opacity: 0.62;
+      background: #f8fafc;
+    }
+
+    .todo.done .title {
+      text-decoration: line-through;
+    }
+
+    .title {
+      margin: 0 0 6px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .meta {
+      margin: 0;
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .status {
+      display: inline-block;
+      margin-left: 8px;
+      color: #111827;
+      font-weight: 700;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 14px 10px;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+
+      form,
+      .todo {
+        grid-template-columns: 1fr;
+      }
+
+      .actions {
+        justify-content: stretch;
+      }
+
+      .actions button {
+        flex: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>待办提醒</h1>
+      <p class="note">数据只保存在当前手机或浏览器，不会同步给其他人。</p>
+    </header>
+
+    <section id="alert" class="panel alert" aria-live="polite"></section>
+
+    <section class="panel">
+      <form id="todoForm">
+        <input id="titleInput" type="text" placeholder="待办事项" autocomplete="off" required>
+        <input id="dueInput" type="datetime-local" required>
+        <button type="submit">添加</button>
+      </form>
+
+      <ul id="todoList" class="list"></ul>
+      <p id="emptyState" class="empty">暂无待办</p>
+    </section>
+  </main>
+
+  <script>
+    const STORAGE_KEY = "publicTodoReminder.todos.v1";
+    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+
+    const form = document.querySelector("#todoForm");
+    const titleInput = document.querySelector("#titleInput");
+    const dueInput = document.querySelector("#dueInput");
+    const list = document.querySelector("#todoList");
+    const emptyState = document.querySelector("#emptyState");
+    const alertBox = document.querySelector("#alert");
+
+    let todos = loadTodos();
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+
+      const title = titleInput.value.trim();
+      const dueAt = dueInput.value;
+      if (!title || !dueAt) return;
+
+      todos.push({
+        id: createId(),
+        title,
+        dueAt,
+        done: false,
+        createdAt: new Date().toISOString()
+      });
+
+      titleInput.value = "";
+      dueInput.value = "";
+      saveTodos();
+      render();
+      titleInput.focus();
+    });
+
+    list.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+
+      const item = button.closest(".todo");
+      const action = button.dataset.action;
+      const id = item.dataset.id;
+
+      if (action === "toggle") {
+        todos = todos.map((todo) => (
+          todo.id === id ? { ...todo, done: !todo.done } : todo
+        ));
+      }
+
+      if (action === "delete") {
+        todos = todos.filter((todo) => todo.id !== id);
+      }
+
+      saveTodos();
+      render();
+    });
+
+    function loadTodos() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveTodos() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    }
+
+    function createId() {
+      if (window.crypto && window.crypto.randomUUID) {
+        return window.crypto.randomUUID();
+      }
+      return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getState(todo) {
+      if (todo.done) return "done";
+
+      const dueTime = new Date(todo.dueAt).getTime();
+      const now = Date.now();
+      if (dueTime < now) return "overdue";
+      if (dueTime - now <= TWO_DAYS_MS) return "due-soon";
+      return "normal";
+    }
+
+    function render() {
+      const activeWarnings = todos.filter((todo) => {
+        const state = getState(todo);
+        return state === "overdue" || state === "due-soon";
+      });
+
+      if (activeWarnings.length) {
+        const overdueCount = activeWarnings.filter((todo) => getState(todo) === "overdue").length;
+        const soonCount = activeWarnings.length - overdueCount;
+        alertBox.textContent = `提醒：${overdueCount} 个已过期，${soonCount} 个将在两天内到期。`;
+        alertBox.classList.add("show");
+      } else {
+        alertBox.textContent = "";
+        alertBox.classList.remove("show");
+      }
+
+      const sorted = [...todos].sort((a, b) => {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        return new Date(a.dueAt) - new Date(b.dueAt);
+      });
+
+      list.innerHTML = "";
+      emptyState.style.display = sorted.length ? "none" : "block";
+
+      for (const todo of sorted) {
+        const state = getState(todo);
+        const item = document.createElement("li");
+        item.className = `todo ${state}`;
+        item.dataset.id = todo.id;
+
+        const statusText = {
+          overdue: "已过期",
+          "due-soon": "快到期",
+          done: "已完成",
+          normal: ""
+        }[state];
+
+        item.innerHTML = `
+          <div>
+            <p class="title"></p>
+            <p class="meta">
+              截止：<time></time>
+              ${statusText ? `<span class="status">${statusText}</span>` : ""}
+            </p>
+          </div>
+          <div class="actions">
+            <button class="secondary" type="button" data-action="toggle">${todo.done ? "恢复" : "完成"}</button>
+            <button class="danger" type="button" data-action="delete">删除</button>
+          </div>
+        `;
+
+        item.querySelector(".title").textContent = todo.title;
+        item.querySelector("time").textContent = formatDateTime(todo.dueAt);
+        list.appendChild(item);
+      }
+    }
+
+    function formatDateTime(value) {
+      return new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date(value));
+    }
+
+    render();
+  </script>
+</body>
+</html>
