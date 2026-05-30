@@ -24,7 +24,7 @@
     }
 
     main {
-      width: min(720px, 100%);
+      width: min(760px, 100%);
       margin: 0 auto;
     }
 
@@ -39,7 +39,15 @@
       letter-spacing: 0;
     }
 
-    .note {
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .note,
+    .help,
+    .sync-status {
       margin: 0;
       color: #64748b;
       font-size: 14px;
@@ -47,6 +55,7 @@
     }
 
     .panel {
+      margin-bottom: 12px;
       background: #ffffff;
       border: 1px solid #d9e1ea;
       border-radius: 8px;
@@ -56,7 +65,6 @@
 
     .alert {
       display: none;
-      margin-bottom: 12px;
       border: 2px solid #dc2626;
       background: #fff1f2;
       color: #991b1b;
@@ -68,11 +76,17 @@
       display: block;
     }
 
-    form {
+    form,
+    .sync-grid {
       display: grid;
       grid-template-columns: 1fr 210px 82px;
       gap: 10px;
       margin-bottom: 14px;
+    }
+
+    .sync-grid {
+      grid-template-columns: 1fr 1fr 88px 96px;
+      margin: 12px 0 8px;
     }
 
     input,
@@ -108,6 +122,11 @@
     button.danger {
       background: #fee2e2;
       color: #991b1b;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
 
     .list {
@@ -182,7 +201,7 @@
       justify-content: flex-end;
     }
 
-    @media (max-width: 640px) {
+    @media (max-width: 700px) {
       body {
         padding: 14px 10px;
       }
@@ -192,6 +211,7 @@
       }
 
       form,
+      .sync-grid,
       .todo {
         grid-template-columns: 1fr;
       }
@@ -210,7 +230,7 @@
   <main>
     <header>
       <h1>待办提醒</h1>
-      <p class="note">数据只保存在当前手机或浏览器，不会同步给其他人。</p>
+      <p class="note">电脑和手机都设置同一个 GitHub Token 和验证码后，同一个验证码共享同一份加密待办。</p>
     </header>
 
     <section id="alert" class="panel alert" aria-live="polite"></section>
@@ -225,11 +245,30 @@
       <ul id="todoList" class="list"></ul>
       <p id="emptyState" class="empty">暂无待办</p>
     </section>
+
+    <section class="panel">
+      <h2>同步</h2>
+      <p class="help">Token 和验证码只保存在当前浏览器；同一个验证码共享数据，不同验证码使用不同数据。</p>
+      <div class="sync-grid">
+        <input id="tokenInput" type="password" placeholder="GitHub Token">
+        <input id="passphraseInput" type="password" placeholder="验证码">
+        <button id="saveSyncButton" type="button">保存</button>
+        <button id="syncNowButton" class="secondary" type="button">立即同步</button>
+      </div>
+      <p id="syncStatus" class="sync-status" aria-live="polite">未设置同步。</p>
+    </section>
   </main>
 
   <script>
-    const STORAGE_KEY = "publicTodoReminder.todos.v1";
+    const STORAGE_KEY = "publicTodoReminder.todos.v2";
+    const LEGACY_STORAGE_KEY = "publicTodoReminder.todos.v1";
+    const SYNC_CONFIG_KEY = "publicTodoReminder.syncConfig.v1";
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const GITHUB_OWNER = "zjl051262-19";
+    const GITHUB_REPO = "todo-reminder";
+    const GITHUB_BRANCH = "main";
+    const SYNC_FILE_PREFIX = "sync-data-";
+    const SYNC_FILE_SUFFIX = ".json";
 
     const form = document.querySelector("#todoForm");
     const titleInput = document.querySelector("#titleInput");
@@ -237,8 +276,20 @@
     const list = document.querySelector("#todoList");
     const emptyState = document.querySelector("#emptyState");
     const alertBox = document.querySelector("#alert");
+    const tokenInput = document.querySelector("#tokenInput");
+    const passphraseInput = document.querySelector("#passphraseInput");
+    const saveSyncButton = document.querySelector("#saveSyncButton");
+    const syncNowButton = document.querySelector("#syncNowButton");
+    const syncStatus = document.querySelector("#syncStatus");
 
     let todos = loadTodos();
+    let syncConfig = loadSyncConfig();
+    let syncTimer = 0;
+    let isSyncing = false;
+
+    tokenInput.value = syncConfig.token || "";
+    passphraseInput.value = syncConfig.code || "";
+    updateSyncStatus(hasSyncConfig() ? "同步已设置。" : "未设置同步。");
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -247,18 +298,21 @@
       const dueAt = dueInput.value;
       if (!title || !dueAt) return;
 
+      const now = new Date().toISOString();
       todos.push({
         id: createId(),
         title,
         dueAt,
         done: false,
-        createdAt: new Date().toISOString()
+        createdAt: now,
+        updatedAt: now
       });
 
       titleInput.value = "";
       dueInput.value = "";
       saveTodos();
       render();
+      scheduleSync();
       titleInput.focus();
     });
 
@@ -269,32 +323,87 @@
       const item = button.closest(".todo");
       const action = button.dataset.action;
       const id = item.dataset.id;
+      const now = new Date().toISOString();
 
       if (action === "toggle") {
         todos = todos.map((todo) => (
-          todo.id === id ? { ...todo, done: !todo.done } : todo
+          todo.id === id ? { ...todo, done: !todo.done, updatedAt: now } : todo
         ));
       }
 
       if (action === "delete") {
-        todos = todos.filter((todo) => todo.id !== id);
+        todos = todos.map((todo) => (
+          todo.id === id ? { ...todo, deletedAt: now, updatedAt: now } : todo
+        ));
       }
 
       saveTodos();
       render();
+      scheduleSync();
     });
 
+    saveSyncButton.addEventListener("click", () => {
+      syncConfig = {
+        token: tokenInput.value.trim(),
+        code: passphraseInput.value.trim()
+      };
+      saveSyncConfig(syncConfig);
+      updateSyncStatus(hasSyncConfig() ? "同步设置已保存。" : "未设置同步。");
+    });
+
+    syncNowButton.addEventListener("click", () => {
+      syncNow();
+    });
+
+    if (hasSyncConfig()) {
+      syncNow();
+    }
+
     function loadTodos() {
+      const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (!saved) return [];
       try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        return saved ? JSON.parse(saved) : [];
+        const parsed = JSON.parse(saved);
+        return parsed.map(normalizeTodo);
       } catch {
         return [];
       }
     }
 
+    function normalizeTodo(todo) {
+      const now = new Date().toISOString();
+      return {
+        id: todo.id || createId(),
+        title: todo.title || "",
+        dueAt: todo.dueAt || "",
+        done: Boolean(todo.done),
+        createdAt: todo.createdAt || now,
+        updatedAt: todo.updatedAt || todo.createdAt || now,
+        deletedAt: todo.deletedAt || null
+      };
+    }
+
     function saveTodos() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    }
+
+    function loadSyncConfig() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SYNC_CONFIG_KEY)) || {};
+        return {
+          token: saved.token || "",
+          code: saved.code || saved.passphrase || ""
+        };
+      } catch {
+        return {
+          token: "",
+          code: ""
+        };
+      }
+    }
+
+    function saveSyncConfig(config) {
+      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(config));
     }
 
     function createId() {
@@ -302,6 +411,10 @@
         return window.crypto.randomUUID();
       }
       return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getVisibleTodos() {
+      return todos.filter((todo) => !todo.deletedAt);
     }
 
     function getState(todo) {
@@ -315,7 +428,8 @@
     }
 
     function render() {
-      const activeWarnings = todos.filter((todo) => {
+      const visibleTodos = getVisibleTodos();
+      const activeWarnings = visibleTodos.filter((todo) => {
         const state = getState(todo);
         return state === "overdue" || state === "due-soon";
       });
@@ -330,7 +444,7 @@
         alertBox.classList.remove("show");
       }
 
-      const sorted = [...todos].sort((a, b) => {
+      const sorted = [...visibleTodos].sort((a, b) => {
         if (a.done !== b.done) return a.done ? 1 : -1;
         return new Date(a.dueAt) - new Date(b.dueAt);
       });
@@ -379,6 +493,225 @@
         hour: "2-digit",
         minute: "2-digit"
       }).format(new Date(value));
+    }
+
+    function scheduleSync() {
+      if (!hasSyncConfig()) return;
+      window.clearTimeout(syncTimer);
+      syncTimer = window.setTimeout(() => syncNow(), 1600);
+    }
+
+    async function syncNow() {
+      if (!hasSyncConfig()) {
+        updateSyncStatus("请先填写并保存 GitHub Token 和验证码。");
+        return;
+      }
+      if (!window.crypto || !window.crypto.subtle) {
+        updateSyncStatus("当前浏览器不支持加密同步，请用 HTTPS 页面打开。");
+        return;
+      }
+      if (isSyncing) return;
+
+      isSyncing = true;
+      syncNowButton.disabled = true;
+      updateSyncStatus("正在同步...");
+
+      try {
+        await syncWithGitHub();
+        updateSyncStatus(`同步完成：${formatDateTime(new Date().toISOString())}`);
+      } catch (error) {
+        updateSyncStatus(`同步失败：${error.message}`);
+      } finally {
+        isSyncing = false;
+        syncNowButton.disabled = false;
+      }
+    }
+
+    async function syncWithGitHub() {
+      const remote = await fetchRemoteFile();
+      let remoteTodos = [];
+      let salt = crypto.getRandomValues(new Uint8Array(16));
+
+      if (remote && remote.payload) {
+        salt = base64ToBytes(remote.payload.salt);
+        const decrypted = await decryptText(remote.payload, syncConfig.code);
+        remoteTodos = JSON.parse(decrypted).todos.map(normalizeTodo);
+      }
+
+      const merged = mergeTodos(todos, remoteTodos);
+      const changed = stableTodos(todos) !== stableTodos(merged) || stableTodos(remoteTodos) !== stableTodos(merged);
+      todos = merged;
+      saveTodos();
+      render();
+
+      if (!changed && remote) return;
+
+      const payload = await encryptText(JSON.stringify({
+        version: 2,
+        updatedAt: new Date().toISOString(),
+        todos: merged
+      }), syncConfig.code, salt);
+
+      await putRemoteFile(payload, remote ? remote.sha : null);
+    }
+
+    function mergeTodos(localTodos, remoteTodos) {
+      const byId = new Map();
+      for (const todo of [...localTodos, ...remoteTodos]) {
+        const normalized = normalizeTodo(todo);
+        const current = byId.get(normalized.id);
+        if (!current || new Date(normalized.updatedAt) >= new Date(current.updatedAt)) {
+          byId.set(normalized.id, normalized);
+        }
+      }
+      return [...byId.values()];
+    }
+
+    function stableTodos(value) {
+      return JSON.stringify([...value].map(normalizeTodo).sort((a, b) => a.id.localeCompare(b.id)));
+    }
+
+    async function fetchRemoteFile() {
+      const response = await fetch(await githubContentsUrl(), {
+        headers: githubHeaders()
+      });
+
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        throw new Error(`GitHub 读取失败 ${response.status}`);
+      }
+
+      const data = await response.json();
+      const text = decodeUtf8(base64ToBytes(data.content.replace(/\s/g, "")));
+      return {
+        sha: data.sha,
+        payload: JSON.parse(text)
+      };
+    }
+
+    async function putRemoteFile(payload, sha) {
+      const body = {
+        message: "Sync todo data",
+        branch: GITHUB_BRANCH,
+        content: bytesToBase64(encodeUtf8(JSON.stringify(payload, null, 2)))
+      };
+      if (sha) body.sha = sha;
+
+      const response = await fetch(await githubContentsUrl(), {
+        method: "PUT",
+        headers: githubHeaders(),
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`GitHub 保存失败 ${response.status} ${detail.slice(0, 80)}`);
+      }
+    }
+
+    async function githubContentsUrl() {
+      const path = await syncFilePath();
+      return `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`;
+    }
+
+    function githubHeaders() {
+      return {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${syncConfig.token}`,
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      };
+    }
+
+    function hasSyncConfig() {
+      return Boolean(syncConfig.token && syncConfig.code);
+    }
+
+    async function syncFilePath() {
+      const digest = await crypto.subtle.digest("SHA-256", encodeUtf8(syncConfig.code));
+      const key = bytesToBase64Url(new Uint8Array(digest)).slice(0, 24);
+      return `${SYNC_FILE_PREFIX}${key}${SYNC_FILE_SUFFIX}`;
+    }
+
+    async function encryptText(text, passphrase, salt) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveKey(passphrase, salt);
+      const encrypted = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        key,
+        encodeUtf8(text)
+      );
+      return {
+        version: 1,
+        algorithm: "AES-GCM",
+        kdf: "PBKDF2-SHA256",
+        iterations: 120000,
+        salt: bytesToBase64(salt),
+        iv: bytesToBase64(iv),
+        data: bytesToBase64(new Uint8Array(encrypted))
+      };
+    }
+
+    async function decryptText(payload, passphrase) {
+      const salt = base64ToBytes(payload.salt);
+      const iv = base64ToBytes(payload.iv);
+      const key = await deriveKey(passphrase, salt);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        base64ToBytes(payload.data)
+      );
+      return decodeUtf8(new Uint8Array(decrypted));
+    }
+
+    async function deriveKey(passphrase, salt) {
+      const material = await crypto.subtle.importKey(
+        "raw",
+        encodeUtf8(passphrase),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt, iterations: 120000, hash: "SHA-256" },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    function encodeUtf8(text) {
+      return new TextEncoder().encode(text);
+    }
+
+    function decodeUtf8(bytes) {
+      return new TextDecoder().decode(bytes);
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 1) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    function bytesToBase64Url(bytes) {
+      return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+
+    function base64ToBytes(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    function updateSyncStatus(message) {
+      syncStatus.textContent = message;
     }
 
     render();
