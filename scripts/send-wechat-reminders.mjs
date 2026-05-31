@@ -123,6 +123,7 @@ function collectReminders(todos, libraryCode) {
 
     reminders.push({
       key: createHash("sha256").update(keySeed, "utf8").digest("hex"),
+      title: todo.title || "未命名事项",
       stage,
       dueAt: todo.dueAt
     });
@@ -153,12 +154,19 @@ async function sendServerChan(libraryCode, reminders) {
   }, {});
 
   const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个事项需要关注`;
+  const details = reminders
+    .slice()
+    .sort((a, b) => parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt))
+    .map((item, index) => `${index + 1}. [${item.stage.label}] ${item.title}（${formatDueAt(item.dueAt)}）`);
+
   const lines = [
     `当前库：${libraryCode}`,
     "",
+    "提醒层级：",
     ...Object.entries(counts).map(([label, count]) => `- ${label}: ${count} 个`),
     "",
-    "为保护隐私，微信推送不展示具体事项名称。请打开待办网页查看详情。"
+    "具体事项：",
+    ...details
   ];
 
   const body = new URLSearchParams({
@@ -190,6 +198,13 @@ async function sendServerChan(libraryCode, reminders) {
   } catch (error) {
     if (error.message.startsWith("ServerChan returned")) throw error;
   }
+}
+
+function formatDueAt(value) {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return String(value);
+  const [, year, month, day, hour, minute] = match;
+  return `${year}/${month}/${day} ${hour}:${minute}`;
 }
 
 function cleanupState(currentState) {
