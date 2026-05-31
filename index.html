@@ -248,7 +248,7 @@
 
     <section class="panel">
       <h2>同步</h2>
-      <p class="help">Token 和验证码只保存在当前浏览器；同一个验证码共享数据，不同验证码使用不同数据。</p>
+      <p class="help">Token 和验证码只保存在当前浏览器；同一个验证码共享数据，不同验证码会切换到不同待办列表。</p>
       <div class="sync-grid">
         <input id="tokenInput" type="password" placeholder="GitHub Token">
         <input id="passphraseInput" type="password" placeholder="验证码">
@@ -260,7 +260,8 @@
   </main>
 
   <script>
-    const STORAGE_KEY = "publicTodoReminder.todos.v2";
+    const STORAGE_KEY_PREFIX = "publicTodoReminder.todos.v2.";
+    const OLD_STORAGE_KEY = "publicTodoReminder.todos.v2";
     const LEGACY_STORAGE_KEY = "publicTodoReminder.todos.v1";
     const SYNC_CONFIG_KEY = "publicTodoReminder.syncConfig.v1";
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
@@ -282,14 +283,14 @@
     const syncNowButton = document.querySelector("#syncNowButton");
     const syncStatus = document.querySelector("#syncStatus");
 
-    let todos = loadTodos();
     let syncConfig = loadSyncConfig();
+    let todos = loadTodos();
     let syncTimer = 0;
     let isSyncing = false;
 
     tokenInput.value = syncConfig.token || "";
     passphraseInput.value = syncConfig.code || "";
-    updateSyncStatus(hasSyncConfig() ? "同步已设置。" : "未设置同步。");
+    updateSyncStatus(hasSyncConfig() ? `同步已设置。当前验证码：${maskCode(syncConfig.code)}` : "未设置同步。");
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -343,12 +344,27 @@
     });
 
     saveSyncButton.addEventListener("click", () => {
-      syncConfig = {
+      const oldConfig = syncConfig;
+      const nextConfig = {
         token: tokenInput.value.trim(),
         code: passphraseInput.value.trim()
       };
+      const oldKey = todosStorageKey(oldConfig);
+      const nextKey = todosStorageKey(nextConfig);
+
+      syncConfig = nextConfig;
       saveSyncConfig(syncConfig);
-      updateSyncStatus(hasSyncConfig() ? "同步设置已保存。" : "未设置同步。");
+
+      if (oldKey !== nextKey) {
+        if (!oldConfig.code && nextConfig.code && !hasTodosForConfig(nextConfig) && todos.length) {
+          saveTodos();
+        } else {
+          todos = loadTodos();
+          render();
+        }
+      }
+
+      updateSyncStatus(hasSyncConfig() ? `同步设置已保存。当前验证码：${maskCode(syncConfig.code)}` : "未设置同步。");
     });
 
     syncNowButton.addEventListener("click", () => {
@@ -360,7 +376,10 @@
     }
 
     function loadTodos() {
-      const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+      let saved = localStorage.getItem(todosStorageKey());
+      if (!saved && !syncConfig.code) {
+        saved = localStorage.getItem(OLD_STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+      }
       if (!saved) return [];
       try {
         const parsed = JSON.parse(saved);
@@ -384,7 +403,31 @@
     }
 
     function saveTodos() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+      localStorage.setItem(todosStorageKey(), JSON.stringify(todos));
+    }
+
+    function todosStorageKey(config = syncConfig) {
+      return `${STORAGE_KEY_PREFIX}${storageScope(config.code)}`;
+    }
+
+    function hasTodosForConfig(config) {
+      return Boolean(localStorage.getItem(todosStorageKey(config)));
+    }
+
+    function storageScope(code) {
+      if (!code) return "local";
+      let hash = 2166136261;
+      for (let i = 0; i < code.length; i += 1) {
+        hash ^= code.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(16).padStart(8, "0");
+    }
+
+    function maskCode(code) {
+      if (!code) return "";
+      if (code.length <= 4) return "****";
+      return `${code.slice(0, 2)}***${code.slice(-2)}`;
     }
 
     function loadSyncConfig() {
