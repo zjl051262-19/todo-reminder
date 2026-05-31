@@ -79,7 +79,7 @@
     form,
     .sync-grid {
       display: grid;
-      grid-template-columns: 1fr 210px 82px;
+      grid-template-columns: 1fr 210px 96px 96px;
       gap: 10px;
       margin-bottom: 14px;
     }
@@ -239,7 +239,8 @@
       <form id="todoForm">
         <input id="titleInput" type="text" placeholder="待办事项" autocomplete="off" required>
         <input id="dueInput" type="datetime-local" required>
-        <button type="submit">添加</button>
+        <button id="submitTodoButton" type="submit">添加</button>
+        <button id="cancelEditButton" class="secondary" type="button" hidden>取消</button>
       </form>
 
       <ul id="todoList" class="list"></ul>
@@ -252,7 +253,7 @@
       <div class="sync-grid">
         <input id="tokenInput" type="password" placeholder="GitHub Token">
         <input id="passphraseInput" type="password" placeholder="验证码">
-        <button id="saveSyncButton" type="button">保存</button>
+        <button id="saveSyncButton" type="button">保存并切换</button>
         <button id="syncNowButton" class="secondary" type="button">立即同步</button>
       </div>
       <p id="syncStatus" class="sync-status" aria-live="polite">未设置同步。</p>
@@ -274,6 +275,8 @@
     const form = document.querySelector("#todoForm");
     const titleInput = document.querySelector("#titleInput");
     const dueInput = document.querySelector("#dueInput");
+    const submitTodoButton = document.querySelector("#submitTodoButton");
+    const cancelEditButton = document.querySelector("#cancelEditButton");
     const list = document.querySelector("#todoList");
     const emptyState = document.querySelector("#emptyState");
     const alertBox = document.querySelector("#alert");
@@ -285,6 +288,7 @@
 
     let syncConfig = loadSyncConfig();
     let todos = loadTodos();
+    let editingId = null;
     let syncTimer = 0;
     let isSyncing = false;
 
@@ -300,17 +304,22 @@
       if (!title || !dueAt) return;
 
       const now = new Date().toISOString();
-      todos.push({
-        id: createId(),
-        title,
-        dueAt,
-        done: false,
-        createdAt: now,
-        updatedAt: now
-      });
+      if (editingId) {
+        todos = todos.map((todo) => (
+          todo.id === editingId ? { ...todo, title, dueAt, updatedAt: now } : todo
+        ));
+      } else {
+        todos.push({
+          id: createId(),
+          title,
+          dueAt,
+          done: false,
+          createdAt: now,
+          updatedAt: now
+        });
+      }
 
-      titleInput.value = "";
-      dueInput.value = "";
+      resetTodoForm();
       saveTodos();
       render();
       scheduleSync();
@@ -336,11 +345,30 @@
         todos = todos.map((todo) => (
           todo.id === id ? { ...todo, deletedAt: now, updatedAt: now } : todo
         ));
+        if (editingId === id) {
+          resetTodoForm();
+        }
+      }
+
+      if (action === "edit") {
+        const todo = todos.find((item) => item.id === id);
+        if (!todo) return;
+        editingId = id;
+        titleInput.value = todo.title;
+        dueInput.value = todo.dueAt;
+        submitTodoButton.textContent = "保存修改";
+        cancelEditButton.hidden = false;
+        titleInput.focus();
+        return;
       }
 
       saveTodos();
       render();
       scheduleSync();
+    });
+
+    cancelEditButton.addEventListener("click", () => {
+      resetTodoForm();
     });
 
     saveSyncButton.addEventListener("click", () => {
@@ -364,7 +392,10 @@
         }
       }
 
-      updateSyncStatus(hasSyncConfig() ? `同步设置已保存。当前验证码：${maskCode(syncConfig.code)}` : "未设置同步。");
+      updateSyncStatus(hasSyncConfig() ? `已切换到验证码：${maskCode(syncConfig.code)}，正在同步...` : "未设置同步。");
+      if (hasSyncConfig()) {
+        syncNow();
+      }
     });
 
     syncNowButton.addEventListener("click", () => {
@@ -518,6 +549,7 @@
           </div>
           <div class="actions">
             <button class="secondary" type="button" data-action="toggle">${todo.done ? "恢复" : "完成"}</button>
+            <button class="secondary" type="button" data-action="edit">编辑</button>
             <button class="danger" type="button" data-action="delete">删除</button>
           </div>
         `;
@@ -542,6 +574,14 @@
       if (!hasSyncConfig()) return;
       window.clearTimeout(syncTimer);
       syncTimer = window.setTimeout(() => syncNow(), 1600);
+    }
+
+    function resetTodoForm() {
+      editingId = null;
+      titleInput.value = "";
+      dueInput.value = "";
+      submitTodoButton.textContent = "添加";
+      cancelEditButton.hidden = true;
     }
 
     async function syncNow() {
