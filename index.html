@@ -54,6 +54,25 @@
       line-height: 1.5;
     }
 
+    .active-space {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 12px 0 0;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #eff6ff;
+      color: #1e3a8a;
+      font-weight: 700;
+    }
+
+    .active-space span {
+      color: #1d4ed8;
+      overflow-wrap: anywhere;
+    }
+
     .panel {
       margin-bottom: 12px;
       background: #ffffff;
@@ -250,6 +269,7 @@
     <section class="panel">
       <h2>同步</h2>
       <p class="help">Token 和验证码只保存在当前浏览器；同一个验证码共享数据，不同验证码会切换到不同待办列表。</p>
+      <div class="active-space">当前库：<span id="activeSpaceName">本机默认库</span></div>
       <div class="sync-grid">
         <input id="tokenInput" type="password" placeholder="GitHub Token">
         <input id="passphraseInput" type="password" placeholder="验证码">
@@ -285,6 +305,7 @@
     const saveSyncButton = document.querySelector("#saveSyncButton");
     const syncNowButton = document.querySelector("#syncNowButton");
     const syncStatus = document.querySelector("#syncStatus");
+    const activeSpaceName = document.querySelector("#activeSpaceName");
 
     let syncConfig = loadSyncConfig();
     let todos = loadTodos();
@@ -294,6 +315,7 @@
 
     tokenInput.value = syncConfig.token || "";
     passphraseInput.value = syncConfig.code || "";
+    updateActiveSpace();
     updateSyncStatus(hasSyncConfig() ? `同步已设置。当前验证码：${maskCode(syncConfig.code)}` : "未设置同步。");
 
     form.addEventListener("submit", (event) => {
@@ -393,8 +415,18 @@
       }
 
       updateSyncStatus(hasSyncConfig() ? `已切换到验证码：${maskCode(syncConfig.code)}，正在同步...` : "未设置同步。");
+      updateActiveSpace();
       if (hasSyncConfig()) {
         syncNow();
+      }
+    });
+
+    passphraseInput.addEventListener("input", () => {
+      const nextCode = passphraseInput.value.trim();
+      if (nextCode && nextCode !== syncConfig.code) {
+        activeSpaceName.textContent = `${spaceLabel(syncConfig.code)}（待切换到：${nextCode}）`;
+      } else {
+        updateActiveSpace();
       }
     });
 
@@ -459,6 +491,14 @@
       if (!code) return "";
       if (code.length <= 4) return "****";
       return `${code.slice(0, 2)}***${code.slice(-2)}`;
+    }
+
+    function updateActiveSpace() {
+      activeSpaceName.textContent = spaceLabel(syncConfig.code);
+    }
+
+    function spaceLabel(code) {
+      return code ? code : "本机默认库";
     }
 
     function loadSyncConfig() {
