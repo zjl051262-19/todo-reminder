@@ -73,6 +73,20 @@
       overflow-wrap: anywhere;
     }
 
+    .push-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      color: #334155;
+      font-weight: 700;
+    }
+
+    .push-option input {
+      width: 18px;
+      min-height: 18px;
+    }
+
     .panel {
       margin-bottom: 12px;
       background: #ffffff;
@@ -306,6 +320,10 @@
       <h2>同步</h2>
       <p class="help">Token 和验证码只保存在当前浏览器；同一个验证码共享数据，不同验证码会切换到不同待办列表。</p>
       <div class="active-space">当前库：<span id="activeSpaceName">本机默认库</span></div>
+      <label class="push-option">
+        <input id="pushEnabledInput" type="checkbox">
+        开启微信推送
+      </label>
       <div class="sync-grid">
         <input id="tokenInput" type="password" placeholder="GitHub Token">
         <input id="passphraseInput" type="password" placeholder="验证码">
@@ -346,6 +364,7 @@
     const syncNowButton = document.querySelector("#syncNowButton");
     const syncStatus = document.querySelector("#syncStatus");
     const activeSpaceName = document.querySelector("#activeSpaceName");
+    const pushEnabledInput = document.querySelector("#pushEnabledInput");
 
     let syncConfig = loadSyncConfig();
     let todos = loadTodos();
@@ -355,6 +374,7 @@
 
     tokenInput.value = syncConfig.token || "";
     passphraseInput.value = syncConfig.code || "";
+    pushEnabledInput.checked = loadPushSettings().wechatPushEnabled;
     updateActiveSpace();
     updateSyncStatus(hasSyncConfig() ? `同步已设置。当前验证码：${maskCode(syncConfig.code)}` : "未设置同步。");
 
@@ -463,12 +483,17 @@
 
       syncConfig = nextConfig;
       saveSyncConfig(syncConfig);
+      savePushSettings({
+        wechatPushEnabled: pushEnabledInput.checked,
+        updatedAt: new Date().toISOString()
+      }, syncConfig);
 
       if (oldKey !== nextKey) {
         if (!oldConfig.code && nextConfig.code && !hasTodosForConfig(nextConfig) && todos.length) {
           saveTodos();
         } else {
           todos = loadTodos();
+          pushEnabledInput.checked = loadPushSettings(syncConfig).wechatPushEnabled;
           render();
         }
       }
@@ -480,12 +505,24 @@
       }
     });
 
+    pushEnabledInput.addEventListener("change", () => {
+      savePushSettings({
+        wechatPushEnabled: pushEnabledInput.checked,
+        updatedAt: new Date().toISOString()
+      });
+      if (hasSyncConfig()) {
+        scheduleSync();
+      }
+    });
+
     passphraseInput.addEventListener("input", () => {
       const nextCode = passphraseInput.value.trim();
       if (nextCode && nextCode !== syncConfig.code) {
         activeSpaceName.textContent = `${spaceLabel(syncConfig.code)}（待切换到：${nextCode}）`;
+        pushEnabledInput.checked = loadPushSettings({ ...syncConfig, code: nextCode }).wechatPushEnabled;
       } else {
         updateActiveSpace();
+        pushEnabledInput.checked = loadPushSettings(syncConfig).wechatPushEnabled;
       }
     });
 
@@ -531,6 +568,32 @@
 
     function todosStorageKey(config = syncConfig) {
       return `${STORAGE_KEY_PREFIX}${storageScope(config.code)}`;
+    }
+
+    function pushSettingsKey(config = syncConfig) {
+      return `publicTodoReminder.pushSettings.v1.${storageScope(config.code)}`;
+    }
+
+    function loadPushSettings(config = syncConfig) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(pushSettingsKey(config))) || {};
+        return {
+          wechatPushEnabled: Boolean(saved.wechatPushEnabled),
+          updatedAt: saved.updatedAt || "1970-01-01T00:00:00.000Z"
+        };
+      } catch {
+        return {
+          wechatPushEnabled: false,
+          updatedAt: "1970-01-01T00:00:00.000Z"
+        };
+      }
+    }
+
+    function savePushSettings(settings, config = syncConfig) {
+      localStorage.setItem(pushSettingsKey(config), JSON.stringify({
+        wechatPushEnabled: Boolean(settings.wechatPushEnabled),
+        updatedAt: settings.updatedAt || new Date().toISOString()
+      }));
     }
 
     function hasTodosForConfig(config) {
@@ -788,17 +851,27 @@
     async function syncWithGitHub() {
       const remote = await fetchRemoteFile();
       let remoteTodos = [];
+      let remoteSettings = null;
       let salt = crypto.getRandomValues(new Uint8Array(16));
 
       if (remote && remote.payload) {
         salt = base64ToBytes(remote.payload.salt);
         const decrypted = await decryptText(remote.payload, syncConfig.code);
-        remoteTodos = JSON.parse(decrypted).todos.map(normalizeTodo);
+        const remoteData = JSON.parse(decrypted);
+        remoteTodos = remoteData.todos.map(normalizeTodo);
+        remoteSettings = normalizePushSettings(remoteData.settings);
       }
 
       const merged = purgeExpiredDeletes(mergeTodos(todos, remoteTodos));
-      const changed = stableTodos(todos) !== stableTodos(merged) || stableTodos(remoteTodos) !== stableTodos(merged);
+      const mergedSettings = mergePushSettings(loadPushSettings(), remoteSettings);
+      const settingsChanged = stablePushSettings(loadPushSettings()) !== stablePushSettings(mergedSettings)
+        || stablePushSettings(remoteSettings) !== stablePushSettings(mergedSettings);
+      const changed = stableTodos(todos) !== stableTodos(merged)
+        || stableTodos(remoteTodos) !== stableTodos(merged)
+        || settingsChanged;
       todos = merged;
+      savePushSettings(mergedSettings);
+      pushEnabledInput.checked = mergedSettings.wechatPushEnabled;
       saveTodos();
       render();
 
@@ -807,6 +880,7 @@
       const payload = await encryptText(JSON.stringify({
         version: 2,
         updatedAt: new Date().toISOString(),
+        settings: mergedSettings,
         todos: todos
       }), syncConfig.code, salt);
 
@@ -823,6 +897,23 @@
         }
       }
       return [...byId.values()];
+    }
+
+    function normalizePushSettings(settings) {
+      return {
+        wechatPushEnabled: Boolean(settings && settings.wechatPushEnabled),
+        updatedAt: settings && settings.updatedAt ? settings.updatedAt : "1970-01-01T00:00:00.000Z"
+      };
+    }
+
+    function mergePushSettings(localSettings, remoteSettings) {
+      const local = normalizePushSettings(localSettings);
+      const remote = normalizePushSettings(remoteSettings);
+      return new Date(remote.updatedAt) > new Date(local.updatedAt) ? remote : local;
+    }
+
+    function stablePushSettings(settings) {
+      return JSON.stringify(normalizePushSettings(settings));
     }
 
     function stableTodos(value) {
