@@ -95,6 +95,16 @@
       display: block;
     }
 
+    .warning-list {
+      margin: 8px 0 0;
+      padding-left: 20px;
+      font-weight: 600;
+    }
+
+    .warning-list li + li {
+      margin-top: 4px;
+    }
+
     form,
     .sync-grid {
       display: grid;
@@ -174,14 +184,29 @@
       background: #ffffff;
     }
 
-    .todo.due-soon {
+    .todo.due-3d {
       border-left-color: #f59e0b;
       background: #fffbeb;
+    }
+
+    .todo.due-1d {
+      border-left-color: #f97316;
+      background: #fff7ed;
+    }
+
+    .todo.due-12h {
+      border-left-color: #ef4444;
+      background: #fef2f2;
     }
 
     .todo.overdue {
       border-left-color: #dc2626;
       background: #fff1f2;
+    }
+
+    .todo.deleted {
+      border-left-color: #64748b;
+      background: #f8fafc;
     }
 
     .todo.done {
@@ -218,6 +243,12 @@
       gap: 8px;
       flex-wrap: wrap;
       justify-content: flex-end;
+    }
+
+    .trash-panel {
+      margin-top: 16px;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 14px;
     }
 
     @media (max-width: 700px) {
@@ -264,6 +295,11 @@
 
       <ul id="todoList" class="list"></ul>
       <p id="emptyState" class="empty">暂无待办</p>
+
+      <div id="trashPanel" class="trash-panel" hidden>
+        <h2>最近删除</h2>
+        <ul id="trashList" class="list"></ul>
+      </div>
     </section>
 
     <section class="panel">
@@ -285,7 +321,9 @@
     const OLD_STORAGE_KEY = "publicTodoReminder.todos.v2";
     const LEGACY_STORAGE_KEY = "publicTodoReminder.todos.v1";
     const SYNC_CONFIG_KEY = "publicTodoReminder.syncConfig.v1";
-    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const HOUR_MS = 60 * 60 * 1000;
+    const DAY_MS = 24 * HOUR_MS;
+    const DELETED_RETENTION_MS = 48 * HOUR_MS;
     const GITHUB_OWNER = "zjl051262-19";
     const GITHUB_REPO = "todo-reminder";
     const GITHUB_BRANCH = "main";
@@ -298,6 +336,8 @@
     const submitTodoButton = document.querySelector("#submitTodoButton");
     const cancelEditButton = document.querySelector("#cancelEditButton");
     const list = document.querySelector("#todoList");
+    const trashPanel = document.querySelector("#trashPanel");
+    const trashList = document.querySelector("#trashList");
     const emptyState = document.querySelector("#emptyState");
     const alertBox = document.querySelector("#alert");
     const tokenInput = document.querySelector("#tokenInput");
@@ -348,11 +388,15 @@
       titleInput.focus();
     });
 
-    list.addEventListener("click", (event) => {
+    list.addEventListener("click", handleTodoAction);
+    trashList.addEventListener("click", handleTodoAction);
+
+    function handleTodoAction(event) {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
 
       const item = button.closest(".todo");
+      if (!item) return;
       const action = button.dataset.action;
       const id = item.dataset.id;
       const now = new Date().toISOString();
@@ -366,6 +410,21 @@
       if (action === "delete") {
         todos = todos.map((todo) => (
           todo.id === id ? { ...todo, deletedAt: now, updatedAt: now } : todo
+        ));
+        if (editingId === id) {
+          resetTodoForm();
+        }
+      }
+
+      if (action === "restore") {
+        todos = todos.map((todo) => (
+          todo.id === id ? { ...todo, deletedAt: null, updatedAt: now } : todo
+        ));
+      }
+
+      if (action === "purge") {
+        todos = todos.map((todo) => (
+          todo.id === id ? { ...todo, deletedAt: todo.deletedAt || now, purgedAt: now, updatedAt: now } : todo
         ));
         if (editingId === id) {
           resetTodoForm();
@@ -387,7 +446,7 @@
       saveTodos();
       render();
       scheduleSync();
-    });
+    }
 
     cancelEditButton.addEventListener("click", () => {
       resetTodoForm();
@@ -446,7 +505,7 @@
       if (!saved) return [];
       try {
         const parsed = JSON.parse(saved);
-        return parsed.map(normalizeTodo);
+        return purgeExpiredDeletes(parsed.map(normalizeTodo));
       } catch {
         return [];
       }
@@ -461,7 +520,8 @@
         done: Boolean(todo.done),
         createdAt: todo.createdAt || now,
         updatedAt: todo.updatedAt || todo.createdAt || now,
-        deletedAt: todo.deletedAt || null
+        deletedAt: todo.deletedAt || null,
+        purgedAt: todo.purgedAt || null
       };
     }
 
@@ -531,32 +591,54 @@
       return todos.filter((todo) => !todo.deletedAt);
     }
 
+    function getDeletedTodos() {
+      return todos
+        .filter((todo) => todo.deletedAt && !todo.purgedAt)
+        .sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt));
+    }
+
+    function purgeExpiredDeletes(items) {
+      const now = Date.now();
+      return items.filter((todo) => {
+        if (!todo.deletedAt) return true;
+        return now - new Date(todo.deletedAt).getTime() <= DELETED_RETENTION_MS;
+      });
+    }
+
     function getState(todo) {
       if (todo.done) return "done";
 
       const dueTime = new Date(todo.dueAt).getTime();
       const now = Date.now();
+      const left = dueTime - now;
       if (dueTime < now) return "overdue";
-      if (dueTime - now <= TWO_DAYS_MS) return "due-soon";
+      if (left <= 12 * HOUR_MS) return "due-12h";
+      if (left <= DAY_MS) return "due-1d";
+      if (left <= 3 * DAY_MS) return "due-3d";
       return "normal";
     }
 
-    function render() {
-      const visibleTodos = getVisibleTodos();
-      const activeWarnings = visibleTodos.filter((todo) => {
-        const state = getState(todo);
-        return state === "overdue" || state === "due-soon";
-      });
+    function getStatusText(state) {
+      return {
+        overdue: "已到期",
+        "due-12h": "12小时内到期",
+        "due-1d": "1天内到期",
+        "due-3d": "3天内到期",
+        done: "已完成",
+        normal: ""
+      }[state];
+    }
 
-      if (activeWarnings.length) {
-        const overdueCount = activeWarnings.filter((todo) => getState(todo) === "overdue").length;
-        const soonCount = activeWarnings.length - overdueCount;
-        alertBox.textContent = `提醒：${overdueCount} 个已过期，${soonCount} 个将在两天内到期。`;
-        alertBox.classList.add("show");
-      } else {
-        alertBox.textContent = "";
-        alertBox.classList.remove("show");
+    function render() {
+      const beforePurge = todos.length;
+      todos = purgeExpiredDeletes(todos);
+      if (todos.length !== beforePurge) {
+        saveTodos();
+        scheduleSync();
       }
+
+      const visibleTodos = getVisibleTodos();
+      renderAlert(visibleTodos);
 
       const sorted = [...visibleTodos].sort((a, b) => {
         if (a.done !== b.done) return a.done ? 1 : -1;
@@ -572,12 +654,7 @@
         item.className = `todo ${state}`;
         item.dataset.id = todo.id;
 
-        const statusText = {
-          overdue: "已过期",
-          "due-soon": "快到期",
-          done: "已完成",
-          normal: ""
-        }[state];
+        const statusText = getStatusText(state);
 
         item.innerHTML = `
           <div>
@@ -597,6 +674,64 @@
         item.querySelector(".title").textContent = todo.title;
         item.querySelector("time").textContent = formatDateTime(todo.dueAt);
         list.appendChild(item);
+      }
+
+      renderTrash();
+    }
+
+    function renderAlert(visibleTodos) {
+      const warnings = visibleTodos
+        .filter((todo) => {
+          const state = getState(todo);
+          return state === "overdue" || state === "due-12h" || state === "due-1d" || state === "due-3d";
+        })
+        .sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+
+      alertBox.innerHTML = "";
+      if (!warnings.length) {
+        alertBox.classList.remove("show");
+        return;
+      }
+
+      const title = document.createElement("div");
+      title.textContent = `到期提醒：${warnings.length} 个事项需要关注`;
+      alertBox.appendChild(title);
+
+      const warningList = document.createElement("ul");
+      warningList.className = "warning-list";
+      for (const todo of warnings) {
+        const item = document.createElement("li");
+        const state = getState(todo);
+        item.textContent = `${getStatusText(state)}：${todo.title}（${formatDateTime(todo.dueAt)}）`;
+        warningList.appendChild(item);
+      }
+
+      alertBox.appendChild(warningList);
+      alertBox.classList.add("show");
+    }
+
+    function renderTrash() {
+      const deletedTodos = getDeletedTodos();
+      trashPanel.hidden = deletedTodos.length === 0;
+      trashList.innerHTML = "";
+
+      for (const todo of deletedTodos) {
+        const item = document.createElement("li");
+        item.className = "todo deleted";
+        item.dataset.id = todo.id;
+        item.innerHTML = `
+          <div>
+            <p class="title"></p>
+            <p class="meta">删除时间：<time></time>，48小时内可恢复</p>
+          </div>
+          <div class="actions">
+            <button class="secondary" type="button" data-action="restore">恢复</button>
+            <button class="danger" type="button" data-action="purge">彻底删除</button>
+          </div>
+        `;
+        item.querySelector(".title").textContent = todo.title;
+        item.querySelector("time").textContent = formatDateTime(todo.deletedAt);
+        trashList.appendChild(item);
       }
     }
 
@@ -661,7 +796,7 @@
         remoteTodos = JSON.parse(decrypted).todos.map(normalizeTodo);
       }
 
-      const merged = mergeTodos(todos, remoteTodos);
+      const merged = purgeExpiredDeletes(mergeTodos(todos, remoteTodos));
       const changed = stableTodos(todos) !== stableTodos(merged) || stableTodos(remoteTodos) !== stableTodos(merged);
       todos = merged;
       saveTodos();
@@ -672,7 +807,7 @@
       const payload = await encryptText(JSON.stringify({
         version: 2,
         updatedAt: new Date().toISOString(),
-        todos: merged
+        todos: todos
       }), syncConfig.code, salt);
 
       await putRemoteFile(payload, remote ? remote.sha : null);
