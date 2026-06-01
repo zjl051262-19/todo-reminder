@@ -98,10 +98,9 @@
 
     .alert {
       display: none;
-      border: 2px solid #dc2626;
-      background: #fff1f2;
-      color: #991b1b;
-      font-weight: 700;
+      border: 1px solid #d9e1ea;
+      background: #ffffff;
+      color: #1f2937;
       line-height: 1.5;
     }
 
@@ -109,14 +108,139 @@
       display: block;
     }
 
-    .warning-list {
-      margin: 8px 0 0;
-      padding-left: 20px;
-      font-weight: 600;
+    .alert-title {
+      margin: 0 0 10px;
+      font-size: 17px;
+      font-weight: 800;
     }
 
-    .warning-list li + li {
-      margin-top: 4px;
+    .week-alerts {
+      display: grid;
+      gap: 10px;
+    }
+
+    .week-block {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #d9e1ea;
+      border-left: 9px solid #64748b;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .week-block.level-now {
+      border-left-color: #b91c1c;
+      background: #fff1f2;
+    }
+
+    .week-block.level-near {
+      border-left-color: #ea580c;
+      background: #fff7ed;
+    }
+
+    .week-block.level-soon {
+      border-left-color: #d97706;
+      background: #fffbeb;
+    }
+
+    .week-block.level-later {
+      border-left-color: #2563eb;
+      background: #eff6ff;
+    }
+
+    .week-block.busy-week-alert {
+      border-left-width: 12px;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+    }
+
+    .week-block.busy-week-alert::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 12px;
+      background: linear-gradient(180deg, #dc2626 0 50%, #f59e0b 50% 100%);
+    }
+
+    .week-summary {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: start;
+      padding: 12px 12px 12px 14px;
+    }
+
+    .week-heading {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 0 0 5px;
+      color: #111827;
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    .week-badge {
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: #111827;
+      color: #ffffff;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .week-badge.busy {
+      background: linear-gradient(90deg, #dc2626, #f59e0b);
+    }
+
+    .week-description {
+      margin: 0;
+      color: #7f1d1d;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .week-description.normal {
+      color: #334155;
+    }
+
+    .week-toggle {
+      min-height: 36px;
+      padding: 0 12px;
+      background: #111827;
+      font-size: 14px;
+    }
+
+    .week-items {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0 12px 12px 20px;
+      list-style: none;
+    }
+
+    .week-items[hidden] {
+      display: none;
+    }
+
+    .week-item {
+      border-top: 1px solid rgba(148, 163, 184, 0.35);
+      padding-top: 8px;
+      color: #334155;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .week-item .item-title {
+      color: #111827;
+      font-weight: 800;
+    }
+
+    .week-item .item-note {
+      display: block;
+      margin-top: 3px;
+      color: #64748b;
+      font-weight: 600;
     }
 
     form,
@@ -383,6 +507,14 @@
       .actions button {
         flex: 1;
       }
+
+      .week-summary {
+        grid-template-columns: 1fr;
+      }
+
+      .week-toggle {
+        width: 100%;
+      }
     }
   </style>
 </head>
@@ -529,6 +661,15 @@
 
     list.addEventListener("click", handleTodoAction);
     trashList.addEventListener("click", handleTodoAction);
+    alertBox.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-alert-toggle]");
+      if (!button) return;
+      const items = document.querySelector(`#${button.dataset.alertToggle}`);
+      if (!items) return;
+      const hidden = !items.hidden;
+      items.hidden = hidden;
+      button.textContent = hidden ? `展开 ${button.dataset.count} 项` : "收起";
+    });
 
     function handleTodoAction(event) {
       const button = event.target.closest("button[data-action]");
@@ -966,15 +1107,9 @@
 
     function shouldShowAlert(todo, weekStats = buildWeekStats(getVisibleTodos())) {
       if (todo.done) return false;
-      const state = getState(todo);
       const priority = getEffectivePriority(todo, weekStats);
       const busyInfo = getBusyInfo(todo, weekStats);
-      return state === "overdue"
-        || state === "due-12h"
-        || state === "due-1d"
-        || state === "due-3d"
-        || PUSH_PRIORITY_IDS.has(priority.id)
-        || busyInfo.busy;
+      return busyInfo.busy || PUSH_PRIORITY_IDS.has(priority.id);
     }
 
     function render() {
@@ -1051,40 +1186,168 @@
     }
 
     function renderAlert(visibleTodos, weekStats) {
-      const warnings = visibleTodos
+      const alertItems = visibleTodos
         .filter((todo) => shouldShowAlert(todo, weekStats))
-        .sort((a, b) => {
-          const priorityA = getEffectivePriority(a, weekStats);
-          const priorityB = getEffectivePriority(b, weekStats);
-          if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
-          return new Date(a.dueAt) - new Date(b.dueAt);
-        });
+        .sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
 
       alertBox.innerHTML = "";
-      if (!warnings.length) {
+      if (!alertItems.length) {
         alertBox.classList.remove("show");
         return;
       }
 
       const title = document.createElement("div");
-      title.textContent = `到期提醒：${warnings.length} 个事项需要关注`;
+      title.className = "alert-title";
+      title.textContent = `提醒：${alertItems.length} 个事项需要关注`;
       alertBox.appendChild(title);
 
-      const warningList = document.createElement("ul");
-      warningList.className = "warning-list";
-      for (const todo of warnings) {
-        const item = document.createElement("li");
-        const state = getState(todo);
-        const priority = getEffectivePriority(todo, weekStats);
-        const busyInfo = getBusyInfo(todo, weekStats);
-        const statusText = getStatusText(state) || "未到期";
-        const busyText = busyInfo.busy ? `，${busyInfo.text}` : "";
-        item.textContent = `${priority.label} / ${statusText}：${todo.title}（${getCountdownText(todo)}，${formatDateTime(todo.dueAt)}${busyText}）`;
-        warningList.appendChild(item);
+      const groups = groupAlertItemsByWeek(alertItems, weekStats);
+      const groupList = document.createElement("div");
+      groupList.className = "week-alerts";
+
+      groups.forEach((group, index) => {
+        groupList.appendChild(createWeekAlertBlock(group, index, weekStats));
+      });
+
+      alertBox.appendChild(groupList);
+      alertBox.classList.add("show");
+    }
+
+    function groupAlertItemsByWeek(items, weekStats) {
+      const groups = new Map();
+      for (const todo of items) {
+        const weekKey = getWeekKey(todo.dueAt);
+        if (!weekKey) continue;
+        if (!groups.has(weekKey)) {
+          groups.set(weekKey, {
+            key: weekKey,
+            stats: weekStats.get(weekKey) || null,
+            items: []
+          });
+        }
+        groups.get(weekKey).items.push(todo);
       }
 
-      alertBox.appendChild(warningList);
-      alertBox.classList.add("show");
+      return [...groups.values()]
+        .sort((a, b) => parseWeekKey(a.key) - parseWeekKey(b.key))
+        .map((group) => ({
+          ...group,
+          items: group.items.sort((a, b) => {
+            const priorityA = getEffectivePriority(a, weekStats);
+            const priorityB = getEffectivePriority(b, weekStats);
+            if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
+            return new Date(a.dueAt) - new Date(b.dueAt);
+          })
+        }));
+    }
+
+    function createWeekAlertBlock(group, index, weekStats) {
+      const isBusy = Boolean(group.stats && group.stats.busy);
+      const block = document.createElement("section");
+      block.className = `week-block ${getWeekLevelClass(group.key)}${isBusy ? " busy-week-alert" : ""}`;
+
+      const itemsId = `week-alert-items-${index}`;
+      const summary = document.createElement("div");
+      summary.className = "week-summary";
+      summary.innerHTML = `
+        <div>
+          <div class="week-heading">
+            <span></span>
+            ${isBusy ? '<span class="week-badge busy">繁忙周</span>' : '<span class="week-badge">重点事项</span>'}
+          </div>
+          <p class="week-description ${isBusy ? "" : "normal"}"></p>
+        </div>
+        <button class="week-toggle" type="button" data-alert-toggle="${itemsId}" data-count="${group.items.length}">展开 ${group.items.length} 项</button>
+      `;
+
+      summary.querySelector(".week-heading span").textContent = getWeekTitle(group.key);
+      summary.querySelector(".week-description").textContent = getWeekDescription(group, weekStats);
+
+      const listElement = document.createElement("ul");
+      listElement.id = itemsId;
+      listElement.className = "week-items";
+      listElement.hidden = true;
+
+      for (const todo of group.items) {
+        const item = document.createElement("li");
+        item.className = "week-item";
+        const priority = getEffectivePriority(todo, weekStats);
+        item.innerHTML = `
+          <span class="item-title"></span>
+          <span class="item-meta"></span>
+          <span class="item-note" hidden></span>
+        `;
+        item.querySelector(".item-title").textContent = `${priority.label}：${todo.title}`;
+        item.querySelector(".item-meta").textContent = `（${getCountdownText(todo)}，${formatWeekdayTime(todo.dueAt)}）`;
+        const itemNote = item.querySelector(".item-note");
+        if (todo.note) {
+          itemNote.textContent = `准备物品：${todo.note}`;
+          itemNote.hidden = false;
+        }
+        listElement.appendChild(item);
+      }
+
+      block.appendChild(summary);
+      block.appendChild(listElement);
+      return block;
+    }
+
+    function getWeekDescription(group) {
+      if (group.stats && group.stats.busy) {
+        const prefix = getRelativeWeekPrefix(group.key);
+        const prefixText = prefix ? `${prefix}，` : "";
+        const reasons = [];
+        if (group.stats.busyByExam) reasons.push(`本周 ${group.stats.examCount} 门考试`);
+        if (group.stats.busyByNonExam) reasons.push(`本周 ${group.stats.nonExamCount} 件非考试事项`);
+        return `${prefixText}繁忙周：${formatWeekLabel(group.key)}，${reasons.join("，")}，需更提前准备`;
+      }
+      return `${getWeekTitle(group.key)}：${group.items.length} 个最紧急/次紧急事项`;
+    }
+
+    function getWeekTitle(weekKey) {
+      const relative = getRelativeWeekPrefix(weekKey);
+      return relative ? `${relative} · ${formatWeekLabel(weekKey)}` : formatWeekLabel(weekKey);
+    }
+
+    function getRelativeWeekPrefix(weekKey) {
+      const distance = getWeekDistance(weekKey);
+      if (distance === 0) return "本周";
+      if (distance === 1) return "下周";
+      if (distance === 2) return "下下周";
+      return "";
+    }
+
+    function getWeekLevelClass(weekKey) {
+      const distance = getWeekDistance(weekKey);
+      if (distance <= 0) return "level-now";
+      if (distance === 1) return "level-near";
+      if (distance === 2) return "level-soon";
+      return "level-later";
+    }
+
+    function getWeekDistance(weekKey) {
+      const weekStart = parseWeekKey(weekKey);
+      const currentStart = parseWeekKey(getWeekKey(new Date().toISOString()));
+      return Math.round((weekStart - currentStart) / (7 * DAY_MS));
+    }
+
+    function parseWeekKey(weekKey) {
+      const match = String(weekKey).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return new Date(weekKey).getTime();
+      const [, year, month, day] = match.map(Number);
+      return new Date(year, month - 1, day).getTime();
+    }
+
+    function formatWeekdayTime(value) {
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "";
+      const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date);
+      const time = new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      }).format(date);
+      return `${weekday} ${time}`;
     }
 
     function renderTrash() {
