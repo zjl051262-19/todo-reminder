@@ -209,28 +209,10 @@
       gap: 12px;
       align-items: center;
       border: 1px solid #d9e1ea;
-      border-left: 6px solid #94a3b8;
+      border-left: 8px solid #94a3b8;
       border-radius: 8px;
       padding: 12px;
       background: #ffffff;
-    }
-
-    .todo.priority-p1 {
-      border-left-color: #dc2626;
-      background: #fff1f2;
-    }
-
-    .todo.priority-p2 {
-      border-left-color: #f97316;
-      background: #fff7ed;
-    }
-
-    .todo.priority-p3 {
-      border-left-color: #2563eb;
-    }
-
-    .todo.priority-p4 {
-      border-left-color: #64748b;
     }
 
     .todo.due-3d {
@@ -251,6 +233,34 @@
     .todo.overdue {
       border-left-color: #dc2626;
       background: #fff1f2;
+    }
+
+    .todo.priority-p1 {
+      border-color: #fecaca;
+      border-left-color: #b91c1c;
+      border-left-width: 10px;
+      background: linear-gradient(90deg, #fee2e2 0%, #fff1f2 46%, #ffffff 100%);
+      box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.16), 0 10px 24px rgba(185, 28, 28, 0.16);
+    }
+
+    .todo.priority-p2 {
+      border-color: #fed7aa;
+      border-left-color: #ea580c;
+      border-left-width: 9px;
+      background: linear-gradient(90deg, #ffedd5 0%, #fff7ed 48%, #ffffff 100%);
+      box-shadow: 0 8px 20px rgba(234, 88, 12, 0.12);
+    }
+
+    .todo.priority-p3 {
+      border-color: #bfdbfe;
+      border-left-color: #2563eb;
+      background: linear-gradient(90deg, #eff6ff 0%, #ffffff 58%);
+    }
+
+    .todo.priority-p4 {
+      border-color: #cbd5e1;
+      border-left-color: #64748b;
+      background: #f8fafc;
     }
 
     .todo.deleted {
@@ -289,9 +299,32 @@
 
     .tag {
       display: inline-block;
+      min-width: 70px;
+      border-radius: 999px;
+      padding: 3px 9px;
       margin-right: 8px;
-      color: #111827;
       font-weight: 700;
+      text-align: center;
+    }
+
+    .priority-p1 .tag {
+      background: #b91c1c;
+      color: #ffffff;
+    }
+
+    .priority-p2 .tag {
+      background: #ea580c;
+      color: #ffffff;
+    }
+
+    .priority-p3 .tag {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .priority-p4 .tag {
+      background: #e2e8f0;
+      color: #475569;
     }
 
     .note-line {
