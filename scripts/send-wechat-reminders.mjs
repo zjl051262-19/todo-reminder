@@ -8,7 +8,7 @@ const STATE_PATH = "reminder-state.json";
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const RETAIN_STATE_MS = 45 * DAY_MS;
-const MESSAGE_FORMAT_VERSION = "compact-week-v1";
+const MESSAGE_FORMAT_VERSION = "event-countdown-note-v1";
 const DEFAULT_PRIORITY_ID = "p3";
 const PRIORITIES = [
   { id: "p1", label: "最紧急", rank: 1 },
@@ -305,12 +305,6 @@ function formatDateOnly(date) {
   return `${month}/${day}`;
 }
 
-function getPrioritySourceText(priority) {
-  if (priority.source === "exam-busy") return "，繁忙周考试自动升级";
-  if (priority.source === "exam") return "，考试自动升级";
-  return "";
-}
-
 function currentPushSlot(now) {
   const chinaTime = new Date(now + 8 * HOUR_MS);
   const year = chinaTime.getUTCFullYear();
@@ -328,36 +322,14 @@ function formatCountdown(dueTime, now) {
 }
 
 async function sendServerChan(libraryCode, reminders) {
-  const counts = reminders.reduce((acc, item) => {
-    acc[item.priority.label] = (acc[item.priority.label] || 0) + 1;
-    return acc;
-  }, {});
-  const busyCount = reminders.filter((item) => item.busyInfo && item.busyInfo.busy).length;
-
   const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个事项需要关注`;
-  const groups = groupRemindersByWeek(reminders);
-  const details = groups.flatMap((group, groupIndex) => {
-    const heading = `${groupIndex + 1}. ${getWeekTitle(group.key)}${group.busy ? "｜繁忙周" : "｜重点事项"}`;
-    const lines = [heading, getCompactWeekDescription(group)];
-    group.items.forEach((item, itemIndex) => {
-      const meta = [item.countdown, formatWeekdayTime(item.dueAt)].filter(Boolean).join(" · ");
-      lines.push(`   ${itemIndex + 1}) ${getCompactPriorityText(item.priority)}：${item.title}`);
-      if (meta) lines.push(`      ${meta}`);
-      if (item.note) lines.push(`      准备物品：${item.note}`);
+  const lines = reminders
+    .slice()
+    .sort((a, b) => parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt))
+    .map((item, index) => {
+      const noteText = item.note ? `；准备物品：${item.note}` : "";
+      return `${index + 1}. ${item.title}：${item.countdown}${noteText}`;
     });
-    return [...lines, ""];
-  });
-
-  const lines = [
-    `当前库：${libraryCode}`,
-    "",
-    "档位统计：",
-    ...formatCountLines(counts),
-    busyCount ? `- 繁忙周事项: ${busyCount} 个` : null,
-    "",
-    "按周提醒：",
-    ...details
-  ].filter((line) => line !== null && line !== undefined);
 
   const body = new URLSearchParams({
     title,
@@ -388,107 +360,6 @@ async function sendServerChan(libraryCode, reminders) {
   } catch (error) {
     if (error.message.startsWith("ServerChan returned")) throw error;
   }
-}
-
-function groupRemindersByWeek(reminders) {
-  const groups = new Map();
-  for (const item of reminders) {
-    const dueTime = parseChinaLocalDateTime(item.dueAt).getTime();
-    if (!Number.isFinite(dueTime)) continue;
-    const key = item.busyInfo && item.busyInfo.key ? item.busyInfo.key : weekKeyFromChinaTimestamp(dueTime);
-    if (!groups.has(key)) {
-      groups.set(key, {
-        key,
-        busy: false,
-        busyInfo: null,
-        items: []
-      });
-    }
-    const group = groups.get(key);
-    if (item.busyInfo && item.busyInfo.busy) {
-      group.busy = true;
-      group.busyInfo = group.busyInfo || item.busyInfo;
-    }
-    group.items.push(item);
-  }
-
-  return [...groups.values()]
-    .sort((a, b) => parseWeekKeyMs(a.key) - parseWeekKeyMs(b.key))
-    .map((group) => ({
-      ...group,
-      items: group.items.sort((a, b) => {
-        if (a.priority.rank !== b.priority.rank) return a.priority.rank - b.priority.rank;
-        return parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt);
-      })
-    }));
-}
-
-function getCompactWeekDescription(group) {
-  if (group.busy && group.busyInfo) {
-    const prefix = getRelativeWeekPrefix(group.key);
-    const prefixText = prefix ? `${prefix}，` : "";
-    return `${prefixText}${group.busyInfo.text}`;
-  }
-  return `${getWeekTitle(group.key)}：${group.items.length} 个最紧急/次紧急事项`;
-}
-
-function getCompactPriorityText(priority) {
-  const sourceText = getPrioritySourceText(priority).replace(/^，/, "");
-  return sourceText ? `${priority.label}（${sourceText}）` : priority.label;
-}
-
-function formatCountLines(counts) {
-  return PRIORITIES
-    .filter((priority) => counts[priority.label])
-    .map((priority) => `- ${priority.label}: ${counts[priority.label]} 个`);
-}
-
-function getWeekTitle(weekKey) {
-  const relative = getRelativeWeekPrefix(weekKey);
-  return relative ? `${relative} · ${formatWeekLabel(weekKey)}` : formatWeekLabel(weekKey);
-}
-
-function getRelativeWeekPrefix(weekKey) {
-  const distance = getWeekDistance(weekKey);
-  if (distance === 0) return "本周";
-  if (distance === 1) return "下周";
-  if (distance === 2) return "下下周";
-  return "";
-}
-
-function getWeekDistance(weekKey) {
-  const currentWeekKey = weekKeyFromChinaTimestamp(Date.now());
-  return Math.round((parseWeekKeyMs(weekKey) - parseWeekKeyMs(currentWeekKey)) / (7 * DAY_MS));
-}
-
-function parseWeekKeyMs(weekKey) {
-  const match = String(weekKey).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return new Date(weekKey).getTime();
-  const [, year, month, day] = match.map(Number);
-  return Date.UTC(year, month - 1, day);
-}
-
-function formatWeekdayTime(value) {
-  const date = parseChinaLocalDateTime(value);
-  if (!Number.isFinite(date.getTime())) return "";
-  const weekday = new Intl.DateTimeFormat("zh-CN", {
-    weekday: "short",
-    timeZone: "Asia/Shanghai"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai"
-  }).format(date);
-  return `${weekday} ${time}`;
-}
-
-function formatDueAt(value) {
-  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (!match) return String(value);
-  const [, year, month, day, hour, minute] = match;
-  return `${year}/${month}/${day} ${hour}:${minute}`;
 }
 
 function cleanupState(currentState) {
