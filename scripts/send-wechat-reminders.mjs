@@ -17,6 +17,7 @@ const PRIORITIES = [
 ];
 const PRIORITY_MAP = new Map(PRIORITIES.map((priority) => [priority.id, priority]));
 const PUSH_PRIORITY_IDS = new Set(["p1", "p2"]);
+const EXAM_KEYWORDS = ["考试", "小测", "测验", "期末", "期中"];
 
 if (!SENDKEY) {
   throw new Error("Missing SERVERCHAN_SENDKEY repository secret.");
@@ -114,6 +115,7 @@ function decryptPayload(payload, passphrase) {
 function collectReminders(todos, libraryCode) {
   const now = Date.now();
   const pushSlot = currentPushSlot(now);
+  const weekStats = buildWeekStats(todos);
   const reminders = [];
 
   for (const todo of todos) {
@@ -122,8 +124,9 @@ function collectReminders(todos, libraryCode) {
     if (!Number.isFinite(dueTime)) continue;
     const left = dueTime - now;
     const stage = getStage(left);
-    const priority = getEffectivePriority(todo, now);
-    if (!PUSH_PRIORITY_IDS.has(priority.id)) continue;
+    const priority = getEffectivePriority(todo, now, weekStats);
+    const busyInfo = getBusyInfo(todo, weekStats);
+    if (!PUSH_PRIORITY_IDS.has(priority.id) && !busyInfo.busy) continue;
 
     const keySeed = [
       libraryCode,
@@ -131,6 +134,7 @@ function collectReminders(todos, libraryCode) {
       todo.updatedAt || todo.createdAt || "",
       todo.dueAt,
       priority.id,
+      busyInfo.key || "normal-week",
       pushSlot
     ].join("|");
 
@@ -139,6 +143,7 @@ function collectReminders(todos, libraryCode) {
       title: todo.title || "未命名事项",
       note: todo.note || "",
       priority,
+      busyInfo,
       stage: stage || { id: "normal", label: "未到期" },
       dueAt: todo.dueAt,
       countdown: formatCountdown(dueTime, now)
@@ -171,27 +176,137 @@ function getPriority(priorityId) {
   return PRIORITY_MAP.get(normalizePriorityId(priorityId));
 }
 
-function getEffectivePriority(todo, now) {
+function getEffectivePriority(todo, now, weekStats) {
   const manual = getPriority(todo.priorityId);
-  const examPriority = getExamAutoPriority(todo, now);
+  const examPriority = getExamAutoPriority(todo, now, weekStats);
   if (examPriority && examPriority.rank < manual.rank) {
-    return { ...examPriority, source: "exam" };
+    return examPriority;
   }
   return { ...manual, source: "manual" };
 }
 
-function getExamAutoPriority(todo, now) {
+function getExamAutoPriority(todo, now, weekStats) {
   if (!isExamTodo(todo)) return null;
   const dueTime = parseChinaLocalDateTime(todo.dueAt).getTime();
   if (!Number.isFinite(dueTime)) return null;
   const left = dueTime - now;
-  if (left <= 7 * DAY_MS) return getPriority("p1");
-  if (left <= 14 * DAY_MS) return getPriority("p2");
+  const stats = getWeekInfo(todo, weekStats);
+  const extraDays = stats && stats.examCount >= 3 ? stats.examCount * 2 : 0;
+  const urgentDays = 7 + extraDays;
+  const secondaryDays = 14 + extraDays;
+  const source = extraDays ? "exam-busy" : "exam";
+  const detail = extraDays
+    ? `本周 ${stats.examCount} 门考试，提前 ${extraDays} 天升级`
+    : "考试事项自动升级";
+
+  if (left <= urgentDays * DAY_MS) {
+    return { ...getPriority("p1"), source, detail, urgentDays, secondaryDays };
+  }
+  if (left <= secondaryDays * DAY_MS) {
+    return { ...getPriority("p2"), source, detail, urgentDays, secondaryDays };
+  }
   return null;
 }
 
 function isExamTodo(todo) {
-  return `${todo.title || ""} ${todo.note || ""}`.includes("考试");
+  const text = `${todo.title || ""} ${todo.note || ""}`;
+  return EXAM_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function buildWeekStats(todos) {
+  const stats = new Map();
+  for (const todo of todos) {
+    if (!isActiveForStats(todo)) continue;
+    const dueTime = parseChinaLocalDateTime(todo.dueAt).getTime();
+    if (!Number.isFinite(dueTime)) continue;
+    const weekKey = weekKeyFromChinaTimestamp(dueTime);
+    if (!stats.has(weekKey)) {
+      stats.set(weekKey, {
+        key: weekKey,
+        examCount: 0,
+        nonExamCount: 0,
+        busyByExam: false,
+        busyByNonExam: false,
+        busy: false
+      });
+    }
+    const info = stats.get(weekKey);
+    if (isExamTodo(todo)) {
+      info.examCount += 1;
+    } else {
+      info.nonExamCount += 1;
+    }
+  }
+
+  for (const info of stats.values()) {
+    info.busyByExam = info.examCount >= 3;
+    info.busyByNonExam = info.nonExamCount >= 5;
+    info.busy = info.busyByExam || info.busyByNonExam;
+  }
+  return stats;
+}
+
+function isActiveForStats(todo) {
+  return Boolean(todo && !todo.done && !todo.deletedAt && !todo.purgedAt && todo.dueAt);
+}
+
+function getWeekInfo(todo, weekStats) {
+  const dueTime = parseChinaLocalDateTime(todo.dueAt).getTime();
+  if (!Number.isFinite(dueTime)) return null;
+  return weekStats.get(weekKeyFromChinaTimestamp(dueTime)) || null;
+}
+
+function getBusyInfo(todo, weekStats) {
+  const info = getWeekInfo(todo, weekStats);
+  if (!info || !info.busy || todo.done || todo.deletedAt) {
+    return { busy: false, key: "", text: "", reason: "" };
+  }
+
+  const reasons = [];
+  if (info.busyByExam) reasons.push(`本周 ${info.examCount} 门考试`);
+  if (info.busyByNonExam) reasons.push(`本周 ${info.nonExamCount} 件非考试事项`);
+  return {
+    busy: true,
+    key: info.key,
+    text: `繁忙周：${formatWeekLabel(info.key)}，${reasons.join("，")}，需更提前准备`,
+    reason: reasons.join("，")
+  };
+}
+
+function weekKeyFromChinaTimestamp(timestamp) {
+  const chinaDate = new Date(timestamp + 8 * HOUR_MS);
+  const day = chinaDate.getUTCDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(Date.UTC(
+    chinaDate.getUTCFullYear(),
+    chinaDate.getUTCMonth(),
+    chinaDate.getUTCDate() + mondayOffset
+  ));
+  const year = monday.getUTCFullYear();
+  const month = String(monday.getUTCMonth() + 1).padStart(2, "0");
+  const dayOfMonth = String(monday.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${dayOfMonth}`;
+}
+
+function formatWeekLabel(weekKey) {
+  const match = String(weekKey).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return weekKey;
+  const [, year, month, day] = match.map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  const end = new Date(Date.UTC(year, month - 1, day + 6));
+  return `${formatDateOnly(start)} 至 ${formatDateOnly(end)}`;
+}
+
+function formatDateOnly(date) {
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${month}/${day}`;
+}
+
+function getPrioritySourceText(priority) {
+  if (priority.source === "exam-busy") return "，繁忙周考试自动升级";
+  if (priority.source === "exam") return "，考试自动升级";
+  return "";
 }
 
 function currentPushSlot(now) {
@@ -215,8 +330,9 @@ async function sendServerChan(libraryCode, reminders) {
     acc[item.priority.label] = (acc[item.priority.label] || 0) + 1;
     return acc;
   }, {});
+  const busyCount = reminders.filter((item) => item.busyInfo && item.busyInfo.busy).length;
 
-  const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个重要事项`;
+  const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个重要或繁忙周事项`;
   const details = reminders
     .slice()
     .sort((a, b) => {
@@ -224,13 +340,17 @@ async function sendServerChan(libraryCode, reminders) {
       return parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt);
     })
     .flatMap((item, index) => {
-      const sourceText = item.priority.source === "exam" ? "，考试自动升级" : "";
+      const sourceText = getPrioritySourceText(item.priority);
+      const busyText = item.busyInfo && item.busyInfo.busy ? "，繁忙周" : "";
       const lines = [
-        `${index + 1}. [${item.priority.label}${sourceText} / ${item.stage.label} / ${item.countdown}] ${item.title}`,
+        `${index + 1}. [${item.priority.label}${sourceText}${busyText} / ${item.stage.label} / ${item.countdown}] ${item.title}`,
         `   截止：${formatDueAt(item.dueAt)}`
       ];
       if (item.note) {
         lines.push(`   准备物品：${item.note}`);
+      }
+      if (item.busyInfo && item.busyInfo.busy) {
+        lines.push(`   ${item.busyInfo.text}`);
       }
       return lines;
     });
@@ -240,10 +360,11 @@ async function sendServerChan(libraryCode, reminders) {
     "",
     "档位统计：",
     ...Object.entries(counts).map(([label, count]) => `- ${label}: ${count} 个`),
+    busyCount ? `- 繁忙周事项: ${busyCount} 个` : "",
     "",
     "具体事项：",
     ...details
-  ];
+  ].filter((line) => line !== "");
 
   const body = new URLSearchParams({
     title,
