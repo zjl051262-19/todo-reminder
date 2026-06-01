@@ -243,6 +243,101 @@
       font-weight: 600;
     }
 
+    .todo-group {
+      overflow: hidden;
+      border: 1px solid #d9e1ea;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .todo-group.priority-p1 {
+      border-color: #fecaca;
+      background: #fff1f2;
+    }
+
+    .todo-group.priority-p2 {
+      border-color: #fed7aa;
+      background: #fff7ed;
+    }
+
+    .todo-group.priority-p3 {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+    }
+
+    .todo-group.priority-p4 {
+      border-color: #cbd5e1;
+      background: #f8fafc;
+    }
+
+    .todo-group-header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+    }
+
+    .todo-group-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 0;
+      font-size: 17px;
+      font-weight: 800;
+    }
+
+    .todo-group-subtitle {
+      margin: 4px 0 0;
+      color: #64748b;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .todo-group-count {
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: #ffffff;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .priority-p1 .todo-group-count {
+      background: #b91c1c;
+    }
+
+    .priority-p2 .todo-group-count {
+      background: #ea580c;
+    }
+
+    .priority-p3 .todo-group-count {
+      background: #2563eb;
+    }
+
+    .priority-p4 .todo-group-count {
+      background: #64748b;
+    }
+
+    .todo-group-toggle {
+      min-height: 36px;
+      padding: 0 12px;
+      background: #111827;
+      font-size: 14px;
+    }
+
+    .todo-group-list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0 12px 12px;
+      list-style: none;
+    }
+
+    .todo-group-list[hidden] {
+      display: none;
+    }
+
     form,
     .sync-grid {
       display: grid;
@@ -515,6 +610,14 @@
       .week-toggle {
         width: 100%;
       }
+
+      .todo-group-header {
+        grid-template-columns: 1fr;
+      }
+
+      .todo-group-toggle {
+        width: 100%;
+      }
     }
   </style>
 </head>
@@ -661,6 +764,15 @@
 
     list.addEventListener("click", handleTodoAction);
     trashList.addEventListener("click", handleTodoAction);
+    list.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-todo-group-toggle]");
+      if (!button) return;
+      const items = document.querySelector(`#${button.dataset.todoGroupToggle}`);
+      if (!items) return;
+      const hidden = !items.hidden;
+      items.hidden = hidden;
+      button.textContent = hidden ? `展开 ${button.dataset.count} 项` : "收起";
+    });
     alertBox.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-alert-toggle]");
       if (!button) return;
@@ -1134,8 +1246,66 @@
 
       list.innerHTML = "";
       emptyState.style.display = sorted.length ? "none" : "block";
+      renderTodoGroups(sorted, weekStats);
 
-      for (const todo of sorted) {
+      renderTrash();
+    }
+
+    function renderTodoGroups(sortedTodos, weekStats) {
+      const groups = new Map(PRIORITIES.map((priority) => [priority.id, {
+        priority,
+        items: []
+      }]));
+
+      for (const todo of sortedTodos) {
+        const priority = getEffectivePriority(todo, weekStats);
+        groups.get(priority.id).items.push(todo);
+      }
+
+      let index = 0;
+      for (const group of groups.values()) {
+        if (!group.items.length) continue;
+        list.appendChild(createTodoGroupBlock(group, index, weekStats));
+        index += 1;
+      }
+    }
+
+    function createTodoGroupBlock(group, index, weekStats) {
+      const wrapper = document.createElement("li");
+      wrapper.className = `todo-group priority-${group.priority.id}`;
+
+      const itemsId = `todo-group-items-${index}`;
+      const activeCount = group.items.filter((todo) => !todo.done).length;
+      const nextTodo = group.items.find((todo) => !todo.done) || group.items[0];
+      const nextText = activeCount ? `最近：${getCountdownText(nextTodo)}` : "全部已完成";
+
+      wrapper.innerHTML = `
+        <div class="todo-group-header">
+          <div>
+            <p class="todo-group-title">
+              <span></span>
+              <span class="todo-group-count"></span>
+            </p>
+            <p class="todo-group-subtitle"></p>
+          </div>
+          <button class="todo-group-toggle" type="button" data-todo-group-toggle="${itemsId}" data-count="${group.items.length}">展开 ${group.items.length} 项</button>
+        </div>
+        <ul id="${itemsId}" class="todo-group-list" hidden></ul>
+      `;
+
+      wrapper.querySelector(".todo-group-title span").textContent = group.priority.label;
+      wrapper.querySelector(".todo-group-count").textContent = `${activeCount} 项未完成`;
+      wrapper.querySelector(".todo-group-subtitle").textContent = nextText;
+
+      const groupList = wrapper.querySelector(".todo-group-list");
+      for (const todo of group.items) {
+        groupList.appendChild(createTodoItem(todo, weekStats));
+      }
+
+      return wrapper;
+    }
+
+    function createTodoItem(todo, weekStats) {
         const state = getState(todo);
         const priority = getEffectivePriority(todo, weekStats);
         const busyInfo = getBusyInfo(todo, weekStats);
@@ -1179,10 +1349,7 @@
           busyLine.textContent = busyInfo.text;
           busyLine.hidden = false;
         }
-        list.appendChild(item);
-      }
-
-      renderTrash();
+        return item;
     }
 
     function renderAlert(visibleTodos, weekStats) {
