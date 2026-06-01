@@ -8,6 +8,15 @@ const STATE_PATH = "reminder-state.json";
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const RETAIN_STATE_MS = 45 * DAY_MS;
+const DEFAULT_PRIORITY_ID = "p3";
+const PRIORITIES = [
+  { id: "p1", label: "最紧急", rank: 1 },
+  { id: "p2", label: "次紧急", rank: 2 },
+  { id: "p3", label: "普通", rank: 3 },
+  { id: "p4", label: "低优先级", rank: 4 }
+];
+const PRIORITY_MAP = new Map(PRIORITIES.map((priority) => [priority.id, priority]));
+const PUSH_PRIORITY_IDS = new Set(["p1", "p2"]);
 
 if (!SENDKEY) {
   throw new Error("Missing SERVERCHAN_SENDKEY repository secret.");
@@ -104,28 +113,35 @@ function decryptPayload(payload, passphrase) {
 
 function collectReminders(todos, libraryCode) {
   const now = Date.now();
+  const pushSlot = currentPushSlot(now);
   const reminders = [];
 
   for (const todo of todos) {
     if (!todo || todo.done || todo.deletedAt || !todo.dueAt) continue;
     const dueTime = parseChinaLocalDateTime(todo.dueAt).getTime();
+    if (!Number.isFinite(dueTime)) continue;
     const left = dueTime - now;
     const stage = getStage(left);
-    if (!stage) continue;
+    const priority = getEffectivePriority(todo, now);
+    if (!PUSH_PRIORITY_IDS.has(priority.id)) continue;
 
     const keySeed = [
       libraryCode,
       todo.id,
       todo.updatedAt || todo.createdAt || "",
       todo.dueAt,
-      stage.id
+      priority.id,
+      pushSlot
     ].join("|");
 
     reminders.push({
       key: createHash("sha256").update(keySeed, "utf8").digest("hex"),
       title: todo.title || "未命名事项",
-      stage,
-      dueAt: todo.dueAt
+      note: todo.note || "",
+      priority,
+      stage: stage || { id: "normal", label: "未到期" },
+      dueAt: todo.dueAt,
+      countdown: formatCountdown(dueTime, now)
     });
   }
 
@@ -147,22 +163,82 @@ function getStage(leftMs) {
   return null;
 }
 
+function normalizePriorityId(value) {
+  return PRIORITY_MAP.has(value) ? value : DEFAULT_PRIORITY_ID;
+}
+
+function getPriority(priorityId) {
+  return PRIORITY_MAP.get(normalizePriorityId(priorityId));
+}
+
+function getEffectivePriority(todo, now) {
+  const manual = getPriority(todo.priorityId);
+  const examPriority = getExamAutoPriority(todo, now);
+  if (examPriority && examPriority.rank < manual.rank) {
+    return { ...examPriority, source: "exam" };
+  }
+  return { ...manual, source: "manual" };
+}
+
+function getExamAutoPriority(todo, now) {
+  if (!isExamTodo(todo)) return null;
+  const dueTime = parseChinaLocalDateTime(todo.dueAt).getTime();
+  if (!Number.isFinite(dueTime)) return null;
+  const left = dueTime - now;
+  if (left <= 7 * DAY_MS) return getPriority("p1");
+  if (left <= 14 * DAY_MS) return getPriority("p2");
+  return null;
+}
+
+function isExamTodo(todo) {
+  return `${todo.title || ""} ${todo.note || ""}`.includes("考试");
+}
+
+function currentPushSlot(now) {
+  const chinaTime = new Date(now + 8 * HOUR_MS);
+  const year = chinaTime.getUTCFullYear();
+  const month = String(chinaTime.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(chinaTime.getUTCDate()).padStart(2, "0");
+  const hour = chinaTime.getUTCHours() < 12 ? "00" : "12";
+  return `${year}-${month}-${day}-${hour}`;
+}
+
+function formatCountdown(dueTime, now) {
+  const left = dueTime - now;
+  if (left < 0) return `已逾期 ${Math.max(1, Math.ceil(Math.abs(left) / DAY_MS))} 天`;
+  if (left < DAY_MS) return "今天截止";
+  return `倒数 ${Math.ceil(left / DAY_MS)} 天`;
+}
+
 async function sendServerChan(libraryCode, reminders) {
   const counts = reminders.reduce((acc, item) => {
-    acc[item.stage.label] = (acc[item.stage.label] || 0) + 1;
+    acc[item.priority.label] = (acc[item.priority.label] || 0) + 1;
     return acc;
   }, {});
 
-  const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个事项需要关注`;
+  const title = `待办提醒：${libraryCode} 有 ${reminders.length} 个重要事项`;
   const details = reminders
     .slice()
-    .sort((a, b) => parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt))
-    .map((item, index) => `${index + 1}. [${item.stage.label}] ${item.title}（${formatDueAt(item.dueAt)}）`);
+    .sort((a, b) => {
+      if (a.priority.rank !== b.priority.rank) return a.priority.rank - b.priority.rank;
+      return parseChinaLocalDateTime(a.dueAt) - parseChinaLocalDateTime(b.dueAt);
+    })
+    .flatMap((item, index) => {
+      const sourceText = item.priority.source === "exam" ? "，考试自动升级" : "";
+      const lines = [
+        `${index + 1}. [${item.priority.label}${sourceText} / ${item.stage.label} / ${item.countdown}] ${item.title}`,
+        `   截止：${formatDueAt(item.dueAt)}`
+      ];
+      if (item.note) {
+        lines.push(`   准备物品：${item.note}`);
+      }
+      return lines;
+    });
 
   const lines = [
     `当前库：${libraryCode}`,
     "",
-    "提醒层级：",
+    "档位统计：",
     ...Object.entries(counts).map(([label, count]) => `- ${label}: ${count} 个`),
     "",
     "具体事项：",
