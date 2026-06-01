@@ -122,9 +122,10 @@
     form,
     .sync-grid {
       display: grid;
-      grid-template-columns: 1fr 210px 96px 96px;
+      grid-template-columns: minmax(0, 1fr) 210px 138px 96px 96px;
       gap: 10px;
       margin-bottom: 14px;
+      align-items: start;
     }
 
     .sync-grid {
@@ -133,18 +134,34 @@
     }
 
     input,
+    select,
+    textarea,
     button {
       min-height: 44px;
       border-radius: 7px;
       font: inherit;
     }
 
-    input {
+    input,
+    select,
+    textarea {
       width: 100%;
       border: 1px solid #cbd5e1;
       padding: 0 11px;
       background: #ffffff;
       color: #1f2937;
+    }
+
+    select {
+      appearance: auto;
+    }
+
+    textarea {
+      grid-column: 1 / 4;
+      min-height: 64px;
+      padding: 10px 11px;
+      resize: vertical;
+      line-height: 1.45;
     }
 
     button {
@@ -196,6 +213,24 @@
       border-radius: 8px;
       padding: 12px;
       background: #ffffff;
+    }
+
+    .todo.priority-p1 {
+      border-left-color: #dc2626;
+      background: #fff1f2;
+    }
+
+    .todo.priority-p2 {
+      border-left-color: #f97316;
+      background: #fff7ed;
+    }
+
+    .todo.priority-p3 {
+      border-left-color: #2563eb;
+    }
+
+    .todo.priority-p4 {
+      border-left-color: #64748b;
     }
 
     .todo.due-3d {
@@ -252,6 +287,19 @@
       font-weight: 700;
     }
 
+    .tag {
+      display: inline-block;
+      margin-right: 8px;
+      color: #111827;
+      font-weight: 700;
+    }
+
+    .note-line {
+      margin-top: 5px;
+      color: #475569;
+      overflow-wrap: anywhere;
+    }
+
     .actions {
       display: flex;
       gap: 8px;
@@ -280,6 +328,10 @@
         grid-template-columns: 1fr;
       }
 
+      textarea {
+        grid-column: auto;
+      }
+
       .actions {
         justify-content: stretch;
       }
@@ -303,8 +355,15 @@
       <form id="todoForm">
         <input id="titleInput" type="text" placeholder="待办事项" autocomplete="off" required>
         <input id="dueInput" type="datetime-local" required>
+        <select id="priorityInput" aria-label="事项档位">
+          <option value="p1">最紧急</option>
+          <option value="p2">次紧急</option>
+          <option value="p3" selected>普通</option>
+          <option value="p4">低优先级</option>
+        </select>
         <button id="submitTodoButton" type="submit">添加</button>
         <button id="cancelEditButton" class="secondary" type="button" hidden>取消</button>
+        <textarea id="noteInput" placeholder="备注：需要准备的物品"></textarea>
       </form>
 
       <ul id="todoList" class="list"></ul>
@@ -347,10 +406,21 @@
     const GITHUB_BRANCH = "main";
     const SYNC_FILE_PREFIX = "sync-data-";
     const SYNC_FILE_SUFFIX = ".json";
+    const DEFAULT_PRIORITY_ID = "p3";
+    const PRIORITIES = [
+      { id: "p1", label: "最紧急", rank: 1 },
+      { id: "p2", label: "次紧急", rank: 2 },
+      { id: "p3", label: "普通", rank: 3 },
+      { id: "p4", label: "低优先级", rank: 4 }
+    ];
+    const PRIORITY_MAP = new Map(PRIORITIES.map((priority) => [priority.id, priority]));
+    const PUSH_PRIORITY_IDS = new Set(["p1", "p2"]);
 
     const form = document.querySelector("#todoForm");
     const titleInput = document.querySelector("#titleInput");
     const dueInput = document.querySelector("#dueInput");
+    const priorityInput = document.querySelector("#priorityInput");
+    const noteInput = document.querySelector("#noteInput");
     const submitTodoButton = document.querySelector("#submitTodoButton");
     const cancelEditButton = document.querySelector("#cancelEditButton");
     const list = document.querySelector("#todoList");
@@ -383,18 +453,22 @@
 
       const title = titleInput.value.trim();
       const dueAt = dueInput.value;
+      const priorityId = normalizePriorityId(priorityInput.value);
+      const note = noteInput.value.trim();
       if (!title || !dueAt) return;
 
       const now = new Date().toISOString();
       if (editingId) {
         todos = todos.map((todo) => (
-          todo.id === editingId ? { ...todo, title, dueAt, updatedAt: now } : todo
+          todo.id === editingId ? { ...todo, title, dueAt, priorityId, note, updatedAt: now } : todo
         ));
       } else {
         todos.push({
           id: createId(),
           title,
           dueAt,
+          priorityId,
+          note,
           done: false,
           createdAt: now,
           updatedAt: now
@@ -457,6 +531,8 @@
         editingId = id;
         titleInput.value = todo.title;
         dueInput.value = todo.dueAt;
+        priorityInput.value = normalizePriorityId(todo.priorityId);
+        noteInput.value = todo.note || "";
         submitTodoButton.textContent = "保存修改";
         cancelEditButton.hidden = false;
         titleInput.focus();
@@ -554,6 +630,8 @@
         id: todo.id || createId(),
         title: todo.title || "",
         dueAt: todo.dueAt || "",
+        priorityId: normalizePriorityId(todo.priorityId),
+        note: todo.note || "",
         done: Boolean(todo.done),
         createdAt: todo.createdAt || now,
         updatedAt: todo.updatedAt || todo.createdAt || now,
@@ -692,6 +770,59 @@
       }[state];
     }
 
+    function normalizePriorityId(value) {
+      return PRIORITY_MAP.has(value) ? value : DEFAULT_PRIORITY_ID;
+    }
+
+    function getPriority(priorityId) {
+      return PRIORITY_MAP.get(normalizePriorityId(priorityId));
+    }
+
+    function getEffectivePriority(todo) {
+      const manual = getPriority(todo.priorityId);
+      const examPriority = getExamAutoPriority(todo);
+      if (examPriority && examPriority.rank < manual.rank) {
+        return { ...examPriority, source: "exam" };
+      }
+      return { ...manual, source: "manual" };
+    }
+
+    function getExamAutoPriority(todo) {
+      if (!isExamTodo(todo)) return null;
+      const dueTime = new Date(todo.dueAt).getTime();
+      if (!Number.isFinite(dueTime)) return null;
+      const left = dueTime - Date.now();
+      if (left <= 7 * DAY_MS) return getPriority("p1");
+      if (left <= 14 * DAY_MS) return getPriority("p2");
+      return null;
+    }
+
+    function isExamTodo(todo) {
+      return `${todo.title || ""} ${todo.note || ""}`.includes("考试");
+    }
+
+    function getCountdownText(todo) {
+      const dueTime = new Date(todo.dueAt).getTime();
+      if (!Number.isFinite(dueTime)) return "";
+      const left = dueTime - Date.now();
+      if (left < 0) {
+        return `已逾期 ${Math.max(1, Math.ceil(Math.abs(left) / DAY_MS))} 天`;
+      }
+      if (left < DAY_MS) return "今天截止";
+      return `倒数 ${Math.ceil(left / DAY_MS)} 天`;
+    }
+
+    function shouldShowAlert(todo) {
+      if (todo.done) return false;
+      const state = getState(todo);
+      const priority = getEffectivePriority(todo);
+      return state === "overdue"
+        || state === "due-12h"
+        || state === "due-1d"
+        || state === "due-3d"
+        || PUSH_PRIORITY_IDS.has(priority.id);
+    }
+
     function render() {
       const beforePurge = todos.length;
       todos = purgeExpiredDeletes(todos);
@@ -705,6 +836,9 @@
 
       const sorted = [...visibleTodos].sort((a, b) => {
         if (a.done !== b.done) return a.done ? 1 : -1;
+        const priorityA = getEffectivePriority(a);
+        const priorityB = getEffectivePriority(b);
+        if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
         return new Date(a.dueAt) - new Date(b.dueAt);
       });
 
@@ -713,19 +847,24 @@
 
       for (const todo of sorted) {
         const state = getState(todo);
+        const priority = getEffectivePriority(todo);
         const item = document.createElement("li");
-        item.className = `todo ${state}`;
+        item.className = `todo ${state} priority-${priority.id}`;
         item.dataset.id = todo.id;
 
         const statusText = getStatusText(state);
+        const upgradeText = priority.source === "exam" ? "（考试自动升级）" : "";
 
         item.innerHTML = `
           <div>
             <p class="title"></p>
             <p class="meta">
+              <span class="tag"></span>
+              <span class="countdown"></span>
               截止：<time></time>
               ${statusText ? `<span class="status">${statusText}</span>` : ""}
             </p>
+            <p class="meta note-line" hidden></p>
           </div>
           <div class="actions">
             <button class="secondary" type="button" data-action="toggle">${todo.done ? "恢复" : "完成"}</button>
@@ -735,7 +874,14 @@
         `;
 
         item.querySelector(".title").textContent = todo.title;
+        item.querySelector(".tag").textContent = `${priority.label}${upgradeText}`;
+        item.querySelector(".countdown").textContent = `${getCountdownText(todo)} · `;
         item.querySelector("time").textContent = formatDateTime(todo.dueAt);
+        const noteLine = item.querySelector(".note-line");
+        if (todo.note) {
+          noteLine.textContent = `准备物品：${todo.note}`;
+          noteLine.hidden = false;
+        }
         list.appendChild(item);
       }
 
@@ -744,11 +890,13 @@
 
     function renderAlert(visibleTodos) {
       const warnings = visibleTodos
-        .filter((todo) => {
-          const state = getState(todo);
-          return state === "overdue" || state === "due-12h" || state === "due-1d" || state === "due-3d";
-        })
-        .sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+        .filter(shouldShowAlert)
+        .sort((a, b) => {
+          const priorityA = getEffectivePriority(a);
+          const priorityB = getEffectivePriority(b);
+          if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
+          return new Date(a.dueAt) - new Date(b.dueAt);
+        });
 
       alertBox.innerHTML = "";
       if (!warnings.length) {
@@ -765,7 +913,9 @@
       for (const todo of warnings) {
         const item = document.createElement("li");
         const state = getState(todo);
-        item.textContent = `${getStatusText(state)}：${todo.title}（${formatDateTime(todo.dueAt)}）`;
+        const priority = getEffectivePriority(todo);
+        const statusText = getStatusText(state) || "未到期";
+        item.textContent = `${priority.label} / ${statusText}：${todo.title}（${getCountdownText(todo)}，${formatDateTime(todo.dueAt)}）`;
         warningList.appendChild(item);
       }
 
@@ -818,6 +968,8 @@
       editingId = null;
       titleInput.value = "";
       dueInput.value = "";
+      priorityInput.value = DEFAULT_PRIORITY_ID;
+      noteInput.value = "";
       submitTodoButton.textContent = "添加";
       cancelEditButton.hidden = true;
     }
