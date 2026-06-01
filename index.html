@@ -333,6 +333,17 @@
       overflow-wrap: anywhere;
     }
 
+    .busy-line {
+      margin-top: 5px;
+      color: #92400e;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .todo.busy-week {
+      outline: 2px solid rgba(245, 158, 11, 0.28);
+    }
+
     .actions {
       display: flex;
       gap: 8px;
@@ -448,6 +459,7 @@
     ];
     const PRIORITY_MAP = new Map(PRIORITIES.map((priority) => [priority.id, priority]));
     const PUSH_PRIORITY_IDS = new Set(["p1", "p2"]);
+    const EXAM_KEYWORDS = ["考试", "小测", "测验", "期末", "期中"];
 
     const form = document.querySelector("#todoForm");
     const titleInput = document.querySelector("#titleInput");
@@ -811,27 +823,134 @@
       return PRIORITY_MAP.get(normalizePriorityId(priorityId));
     }
 
-    function getEffectivePriority(todo) {
+    function getEffectivePriority(todo, weekStats = buildWeekStats(getVisibleTodos())) {
       const manual = getPriority(todo.priorityId);
-      const examPriority = getExamAutoPriority(todo);
+      const examPriority = getExamAutoPriority(todo, weekStats);
       if (examPriority && examPriority.rank < manual.rank) {
-        return { ...examPriority, source: "exam" };
+        return examPriority;
       }
       return { ...manual, source: "manual" };
     }
 
-    function getExamAutoPriority(todo) {
+    function getExamAutoPriority(todo, weekStats = buildWeekStats(getVisibleTodos())) {
       if (!isExamTodo(todo)) return null;
       const dueTime = new Date(todo.dueAt).getTime();
       if (!Number.isFinite(dueTime)) return null;
       const left = dueTime - Date.now();
-      if (left <= 7 * DAY_MS) return getPriority("p1");
-      if (left <= 14 * DAY_MS) return getPriority("p2");
+      const stats = getWeekInfo(todo, weekStats);
+      const extraDays = stats && stats.examCount >= 3 ? stats.examCount * 2 : 0;
+      const urgentDays = 7 + extraDays;
+      const secondaryDays = 14 + extraDays;
+      const source = extraDays ? "exam-busy" : "exam";
+      const detail = extraDays
+        ? `本周 ${stats.examCount} 门考试，提前 ${extraDays} 天升级`
+        : "考试事项自动升级";
+
+      if (left <= urgentDays * DAY_MS) {
+        return { ...getPriority("p1"), source, detail, urgentDays, secondaryDays };
+      }
+      if (left <= secondaryDays * DAY_MS) {
+        return { ...getPriority("p2"), source, detail, urgentDays, secondaryDays };
+      }
       return null;
     }
 
     function isExamTodo(todo) {
-      return `${todo.title || ""} ${todo.note || ""}`.includes("考试");
+      const text = `${todo.title || ""} ${todo.note || ""}`;
+      return EXAM_KEYWORDS.some((keyword) => text.includes(keyword));
+    }
+
+    function buildWeekStats(items) {
+      const stats = new Map();
+      for (const todo of items) {
+        if (!isActiveForStats(todo)) continue;
+        const weekKey = getWeekKey(todo.dueAt);
+        if (!weekKey) continue;
+        if (!stats.has(weekKey)) {
+          stats.set(weekKey, {
+            key: weekKey,
+            examCount: 0,
+            nonExamCount: 0,
+            busyByExam: false,
+            busyByNonExam: false,
+            busy: false
+          });
+        }
+        const info = stats.get(weekKey);
+        if (isExamTodo(todo)) {
+          info.examCount += 1;
+        } else {
+          info.nonExamCount += 1;
+        }
+      }
+
+      for (const info of stats.values()) {
+        info.busyByExam = info.examCount >= 3;
+        info.busyByNonExam = info.nonExamCount >= 5;
+        info.busy = info.busyByExam || info.busyByNonExam;
+      }
+      return stats;
+    }
+
+    function isActiveForStats(todo) {
+      return Boolean(todo && !todo.done && !todo.deletedAt && !todo.purgedAt && todo.dueAt);
+    }
+
+    function getWeekInfo(todo, weekStats) {
+      const weekKey = getWeekKey(todo.dueAt);
+      return weekKey ? weekStats.get(weekKey) || null : null;
+    }
+
+    function getBusyInfo(todo, weekStats = buildWeekStats(getVisibleTodos())) {
+      const info = getWeekInfo(todo, weekStats);
+      if (!info || !info.busy || todo.done || todo.deletedAt) {
+        return { busy: false, text: "", reason: "" };
+      }
+
+      const reasons = [];
+      if (info.busyByExam) reasons.push(`本周 ${info.examCount} 门考试`);
+      if (info.busyByNonExam) reasons.push(`本周 ${info.nonExamCount} 件非考试事项`);
+      return {
+        busy: true,
+        key: info.key,
+        text: `繁忙周：${formatWeekLabel(info.key)}，${reasons.join("，")}，需更提前准备`,
+        reason: reasons.join("，")
+      };
+    }
+
+    function getWeekKey(value) {
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "";
+      const localDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const day = localDay.getDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      localDay.setDate(localDay.getDate() + mondayOffset);
+      const year = localDay.getFullYear();
+      const month = String(localDay.getMonth() + 1).padStart(2, "0");
+      const dayOfMonth = String(localDay.getDate()).padStart(2, "0");
+      return `${year}-${month}-${dayOfMonth}`;
+    }
+
+    function formatWeekLabel(weekKey) {
+      const match = String(weekKey).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return weekKey;
+      const [, year, month, day] = match.map(Number);
+      const start = new Date(year, month - 1, day);
+      const end = new Date(year, month - 1, day + 6);
+      return `${formatDateOnly(start)} 至 ${formatDateOnly(end)}`;
+    }
+
+    function formatDateOnly(date) {
+      return new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit",
+        day: "2-digit"
+      }).format(date);
+    }
+
+    function getPrioritySourceText(priority) {
+      if (priority.source === "exam-busy") return "（繁忙周考试自动升级）";
+      if (priority.source === "exam") return "（考试自动升级）";
+      return "";
     }
 
     function getCountdownText(todo) {
@@ -845,15 +964,17 @@
       return `倒数 ${Math.ceil(left / DAY_MS)} 天`;
     }
 
-    function shouldShowAlert(todo) {
+    function shouldShowAlert(todo, weekStats = buildWeekStats(getVisibleTodos())) {
       if (todo.done) return false;
       const state = getState(todo);
-      const priority = getEffectivePriority(todo);
+      const priority = getEffectivePriority(todo, weekStats);
+      const busyInfo = getBusyInfo(todo, weekStats);
       return state === "overdue"
         || state === "due-12h"
         || state === "due-1d"
         || state === "due-3d"
-        || PUSH_PRIORITY_IDS.has(priority.id);
+        || PUSH_PRIORITY_IDS.has(priority.id)
+        || busyInfo.busy;
     }
 
     function render() {
@@ -865,12 +986,13 @@
       }
 
       const visibleTodos = getVisibleTodos();
-      renderAlert(visibleTodos);
+      const weekStats = buildWeekStats(visibleTodos);
+      renderAlert(visibleTodos, weekStats);
 
       const sorted = [...visibleTodos].sort((a, b) => {
         if (a.done !== b.done) return a.done ? 1 : -1;
-        const priorityA = getEffectivePriority(a);
-        const priorityB = getEffectivePriority(b);
+        const priorityA = getEffectivePriority(a, weekStats);
+        const priorityB = getEffectivePriority(b, weekStats);
         if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
         return new Date(a.dueAt) - new Date(b.dueAt);
       });
@@ -880,13 +1002,14 @@
 
       for (const todo of sorted) {
         const state = getState(todo);
-        const priority = getEffectivePriority(todo);
+        const priority = getEffectivePriority(todo, weekStats);
+        const busyInfo = getBusyInfo(todo, weekStats);
         const item = document.createElement("li");
-        item.className = `todo ${state} priority-${priority.id}`;
+        item.className = `todo ${state} priority-${priority.id}${busyInfo.busy ? " busy-week" : ""}`;
         item.dataset.id = todo.id;
 
         const statusText = getStatusText(state);
-        const upgradeText = priority.source === "exam" ? "（考试自动升级）" : "";
+        const upgradeText = getPrioritySourceText(priority);
 
         item.innerHTML = `
           <div>
@@ -898,6 +1021,7 @@
               ${statusText ? `<span class="status">${statusText}</span>` : ""}
             </p>
             <p class="meta note-line" hidden></p>
+            <p class="meta busy-line" hidden></p>
           </div>
           <div class="actions">
             <button class="secondary" type="button" data-action="toggle">${todo.done ? "恢复" : "完成"}</button>
@@ -915,18 +1039,23 @@
           noteLine.textContent = `准备物品：${todo.note}`;
           noteLine.hidden = false;
         }
+        const busyLine = item.querySelector(".busy-line");
+        if (busyInfo.busy) {
+          busyLine.textContent = busyInfo.text;
+          busyLine.hidden = false;
+        }
         list.appendChild(item);
       }
 
       renderTrash();
     }
 
-    function renderAlert(visibleTodos) {
+    function renderAlert(visibleTodos, weekStats) {
       const warnings = visibleTodos
-        .filter(shouldShowAlert)
+        .filter((todo) => shouldShowAlert(todo, weekStats))
         .sort((a, b) => {
-          const priorityA = getEffectivePriority(a);
-          const priorityB = getEffectivePriority(b);
+          const priorityA = getEffectivePriority(a, weekStats);
+          const priorityB = getEffectivePriority(b, weekStats);
           if (priorityA.rank !== priorityB.rank) return priorityA.rank - priorityB.rank;
           return new Date(a.dueAt) - new Date(b.dueAt);
         });
@@ -946,9 +1075,11 @@
       for (const todo of warnings) {
         const item = document.createElement("li");
         const state = getState(todo);
-        const priority = getEffectivePriority(todo);
+        const priority = getEffectivePriority(todo, weekStats);
+        const busyInfo = getBusyInfo(todo, weekStats);
         const statusText = getStatusText(state) || "未到期";
-        item.textContent = `${priority.label} / ${statusText}：${todo.title}（${getCountdownText(todo)}，${formatDateTime(todo.dueAt)}）`;
+        const busyText = busyInfo.busy ? `，${busyInfo.text}` : "";
+        item.textContent = `${priority.label} / ${statusText}：${todo.title}（${getCountdownText(todo)}，${formatDateTime(todo.dueAt)}${busyText}）`;
         warningList.appendChild(item);
       }
 
