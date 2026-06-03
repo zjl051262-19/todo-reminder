@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "algorithm": "AES-GCM",
+  "kdf": "PBKDF2-SHA256",
+  "iterations": 120000,
+  "salt": "PPT+Awk4QGzQILOMXgpDzA==",
+  "iv": "3gpBOBYDY/cL0YSJ",
+  "data": "QaxDS6jMZgfmJVN/xvMffhJ/m40Rzm0q0h86PpkVuRnBcKG/BGc9UnRAGS8j/pEEUDcffR5olv1uApD5cAxC+Q92oW3VFx2r/tszAM3MYuxrBXW0c/nFuwQr4v9RjKIp9MCGHBtwwKRoX5U1HNYC73cemyjb4Kd1Aetiir+JbP8OoxDREC9K5wY0cPDSTPjqQnMH2CnMMpe0GZjxdg=="
+}
